@@ -28,8 +28,8 @@ A voice-first medical report assistant for one doctor, built from the *MedLens A
 
 ```bash
 # 0. Clone
-git clone https://github.com/__OWNER__/medlens-ai.git
-cd medlens-ai
+git clone https://github.com/nikhilkumar905/Medi-Lens.git
+cd Medi-Lens
 
 # 1. Backend
 cd backend
