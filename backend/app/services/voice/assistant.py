@@ -20,7 +20,17 @@ def _fn(name: str, desc: str, props: dict | None = None, required: list | None =
             "parameters": {"type": "object", "properties": props or {}, "required": required or []}}}
 
 
+STEPS = ["home", "menu", "report", "upload", "camera", "disease"]
+
 TOOLS = [
+    _fn("navigate_to", "Move the guided screen to a step: home (body figure), menu ('How can I help?' with the two "
+        "options), report (choose upload vs camera), upload (upload / find a file), camera (scan the report with the "
+        "camera), disease (ask about a disease or symptoms).",
+        {"step": {"type": "string", "enum": STEPS}}, ["step"]),
+    _fn("ask_about_disease", "Explain a named disease or condition: overview, symptoms, causes, prevention, "
+        "precautions, what to avoid. Use when they ask about a disease by name, e.g. 'tell me about diabetes', "
+        "'how to prevent dengue', 'what is anemia'.",
+        {"disease": {"type": "string"}}, ["disease"]),
     _fn("open_report_upload", "Open a file browser so the doctor can pick a report (optionally starting in a folder).",
         {"kind": {"type": "string", "enum": UPLOAD_KINDS}, "location": {"type": "string"}}),
     _fn("open_file_from_computer", "Find a report file on the doctor's computer by folder and name, open it and "
@@ -28,10 +38,10 @@ TOOLS = [
         "Downloads', 'analyze ramesh blood test on the desktop', 'take the latest report in documents', "
         "'the lipid pdf in D drive medi folder'.",
         {"location": {"type": "string", "description": "Folder as spoken, normalised: Downloads, Desktop, Documents, "
-                      "Pictures, OneDrive, a subfolder like 'Downloads/reports', or a path like 'D:\medi'. Empty if not said."},
+                      "Pictures, OneDrive, a subfolder like 'Downloads/reports', or a path like 'D:\\medi'. Empty if not said."},
          "file_query": {"type": "string", "description": "Words identifying the file name, e.g. 'cbc report'. "
                         "Empty or 'latest' for the newest file."}}),
-    _fn("activate_camera", "Open the camera to scan a document or capture an image."),
+    _fn("activate_camera", "Open the camera so they can show the medical report to it and capture it for analysis."),
     _fn("capture_image", "Capture a photo from the open camera."),
     _fn("select_body_part", "Highlight a body part and open the body-part investigation workflow.",
         {"body_part": {"type": "string", "enum": BODY_PARTS}}, ["body_part"]),
@@ -56,12 +66,22 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
-SYSTEM = """You are MedLens, a friendly AI assistant chatting by voice with a doctor in their clinic workspace.
+SYSTEM = """You are MedLens, a friendly AI health assistant chatting by voice with the user (often a doctor) in a guided web app.
 Talk like a warm, sharp colleague: casual, natural, short (1-3 sentences), contractions welcome, no lists, no
 markdown, no robotic phrases like "How may I assist you". Respond to what they actually said, and keep the
 conversation going with a natural follow-up when useful.
 
+The screen is a guided flow: home (human body figure) -> menu "How can I help you?" with two options:
+(1) analyze a medical report, (2) ask about a disease / symptoms / get recommendations. Option 1 then offers
+(a) upload a file or (b) show the report to the camera. Use navigate_to to move between these steps when they pick
+an option ("the first one", "analyze my report", "upload", "use the camera", "ask about a disease", "go home").
+If they pick option 2 without naming a disease or symptoms, call navigate_to with step "disease" AND ask what's
+bothering them. If they pick option 1 without naming a file, call navigate_to with step "report".
+
 Understand the intent behind their words:
+- They name a disease and want to know about it, how to prevent it, precautions or what to avoid
+  -> call ask_about_disease.
+- They want to show the report to the camera / scan it -> call activate_camera.
 - They describe symptoms or a patient's complaints (e.g. "I've got a patient with fever and joint pain for 3 days")
   -> call analyze_symptoms with the complete picture (merge details from earlier turns), and say something brief
   and natural like "Okay, let me think through that."
@@ -137,6 +157,12 @@ def interpret_command(text: str, history: list[dict], context: dict) -> dict:
 def _ack(a: dict) -> str:
     n, args = a["name"], a["args"]
     return {
+        "navigate_to": {"menu": "How can I help you?", "report": "Would you like to upload a file or show the report to the camera?",
+                        "upload": "Drop the file in, or tell me where it is, like the CBC report in Downloads.",
+                        "camera": "Opening the camera. Hold the report steady and say capture.",
+                        "disease": "Sure. Tell me your symptoms, or name a disease you'd like to know about.",
+                        "home": "Back to the start."}.get(args.get("step", ""), "Okay."),
+        "ask_about_disease": f"Let me pull up what you should know about {args.get('disease', 'that')}.",
         "open_report_upload": "Opening your file browser — pick the report and I'll take it from there.",
         "activate_camera": "Opening the camera. Please allow camera access if your browser asks.",
         "capture_image": "Capturing the image.",

@@ -1,4 +1,4 @@
-import type { Analysis, Doc, Health, Patient, RouteDecision, UploadKind, VoiceAction, Evidence, SymptomResult } from '../types'
+import type { Analysis, Doc, Health, Patient, RouteDecision, UploadKind, VoiceAction, Evidence, SymptomResult, DiseaseInfo } from '../types'
 
 const TOKEN_KEY = 'medlens_token'
 let token: string | null = sessionStorage.getItem(TOKEN_KEY)
@@ -87,6 +87,7 @@ export const api = {
     req<SymptomResult>('/symptoms/analyze', { method: 'POST', body: json({ text, patient_id, analysis_id }) }),
   ask: (question: string, patient_id?: number | null) =>
     req<{ answer: string; evidence: Evidence[]; warnings: string[]; model: string }>('/knowledge/ask', { method: 'POST', body: json({ question, patient_id }) }),
+  disease: (disease: string) => req<DiseaseInfo>('/knowledge/disease', { method: 'POST', body: json({ disease }) }),
 }
 
 export interface CompareResult {

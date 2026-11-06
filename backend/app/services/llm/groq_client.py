@@ -101,3 +101,15 @@ def redact(text: str, names: list[str | None]) -> str:
             for part in {n.strip(), *[p for p in n.split() if len(p) > 2 and p.lower() not in ("mr", "mrs", "ms", "dr")]}:
                 text = re.sub(re.escape(part), "[PATIENT]", text, flags=re.IGNORECASE)
     return text
+
+
+def as_list(v) -> list[str]:
+    """LLMs sometimes return a list field as one string; normalise to a list of short strings."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str) and v.strip():
+        parts = re.split(r"\s*(?:;|\n|•|(?<=[a-z\)])\.\s+(?=[A-Z])|,\s+(?=[A-Z]))\s*", v.strip())
+        if len(parts) == 1 and v.count(",") >= 2:  # plain comma list: "CBC, iron studies, or B12 levels"
+            parts = re.split(r",\s*(?:and\s+|or\s+)?", v.strip())
+        return [p.strip(" .-") for p in parts if p.strip(" .-")]
+    return []

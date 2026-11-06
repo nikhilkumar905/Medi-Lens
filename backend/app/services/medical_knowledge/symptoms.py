@@ -25,7 +25,17 @@ return JSON:
  "red_flags": [str],
  "recommended_evaluation": [str],
  "follow_up_questions": [str],
+ "severity": "mild"|"moderate"|"serious",
+ "causes": [str],
+ "prevention": [str],
+ "precautions": [str],
+ "avoid": [str],
+ "see_doctor_if": [str],
  "spoken_summary": str}
+"causes": 3-5 common causes/triggers of this symptom picture. "prevention": 3-5 preventive measures.
+"precautions": 3-5 practical self-care steps for now. "avoid": 3-5 things to avoid. "see_doctor_if": 2-4 warning
+signs needing prompt care. These lists are plain language, one short sentence each (max ~15 words).
+"severity": how urgent the overall picture looks.
 Rules: build the differential from sound clinical reasoning across common, important and can't-miss causes
 (including infectious, inflammatory/autoimmune, and regionally common conditions) — do NOT limit it to the topics of
 the evidence passages; use passages only to support items they genuinely relate to. Give 4-7 possible conditions
@@ -65,6 +75,8 @@ def analyze_symptoms(db: Session, text: str, patient_id: int | None = None,
         {"role": "user", "content": f"Doctor said: {said}\n\nExtracted: {extracted}\n{labs}\n\nEvidence:\n{ev_text}"[:24000]},
     ], max_tokens=3000, temperature=0.3, reasoning_effort="medium")
     valid = {e["id"] for e in ev}
+    for k in ("red_flags", "recommended_evaluation", "follow_up_questions", "causes", "prevention", "precautions", "avoid", "see_doctor_if"):
+        data[k] = llm.as_list(data.get(k))
     for c in data.get("possible_conditions") or []:
         c["evidence"] = [i for i in c.get("evidence") or [] if i in valid]
         if c.get("likelihood") not in ("more likely", "possible", "less likely"):
@@ -79,4 +91,46 @@ def analyze_symptoms(db: Session, text: str, patient_id: int | None = None,
                         "Clinical validation data not available."],
         "model": model,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+DISEASE_PROMPT = """You explain a disease or health condition in plain, friendly language, using the numbered
+evidence passages [E1].. when relevant. Return JSON:
+{"name": str, "overview": str, "severity": "mild"|"moderate"|"serious"|"varies",
+ "symptoms": [str], "causes": [str], "risk_factors": [str], "prevention": [str],
+ "precautions": [str], "avoid": [str], "diagnostic_tests": [str], "see_doctor_if": [str],
+ "evidence_used": ["E1"], "spoken_summary": str}
+"overview": 2 short sentences. Fill EVERY list (never leave one empty for a real condition); each item is ONE short
+sentence (max ~15 words), 3-6 items per list.
+"diagnostic_tests": tests doctors usually use to confirm it (e.g. blood tests, scans). "severity": typical seriousness. "spoken_summary": 2-3 warm,
+conversational sentences for reading aloud (no lists, no markdown, no citations). Cite only evidence IDs given.
+Never prescribe drugs or doses. If the input is not a recognisable condition, set "name" to what was asked and
+explain briefly in "overview" that you need a clearer condition name, with empty lists."""
+
+
+def disease_info(db: Session, disease: str) -> dict:
+    disease = disease.strip()[:200]
+    warnings = []
+    try:
+        pubmed.ingest_articles(db, pubmed.search_pubmed(f"({disease}) AND (prevention OR risk factors OR review)", max_results=4))
+    except Exception as e:
+        warnings.append(f"PubMed retrieval failed: {e}")
+    hits = bm25_search(db, disease, k=5)
+    ev = [{"id": f"E{i}", **h} for i, h in enumerate(hits, 1)]
+    ev_text = "\n\n".join(f"[{e['id']}] {e.get('title') or ''}\n{e['text']}" for e in ev) or "(no evidence retrieved)"
+    data, model = llm.chat_json([
+        {"role": "system", "content": DISEASE_PROMPT},
+        {"role": "user", "content": f"Condition asked about: {disease}\n\nEvidence:\n{ev_text}"[:20000]},
+    ], max_tokens=4000, temperature=0.3)
+    valid = {e["id"] for e in ev}
+    data["evidence_used"] = [i for i in data.get("evidence_used") or [] if i in valid]
+    for k in ("symptoms", "causes", "risk_factors", "prevention", "precautions", "avoid", "diagnostic_tests", "see_doctor_if"):
+        data[k] = llm.as_list(data.get(k))
+    return {
+        "input": disease,
+        **data,
+        "evidence": [{k: e.get(k) for k in ("id", "source_type", "source_id", "title", "page", "meta", "text")} for e in ev],
+        "warnings": warnings,
+        "limitations": ["General health information for decision support — not a diagnosis or treatment plan."],
+        "model": model,
     }

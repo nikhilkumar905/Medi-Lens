@@ -35,9 +35,25 @@ patient's own prior documents. Return JSON:
                                   "rationale": str, "evidence": ["E2"]}],
  "suggested_further_evaluation": [str],
  "limitations": [str],
+ "severity": "normal"|"mild"|"moderate"|"serious",
+ "severity_reason": str,
+ "key_points": [str],
+ "plain_findings": [{"test": str, "status": "high"|"low", "meaning": str}],
+ "precautions": [str],
+ "avoid": [str],
+ "lifestyle": [str],
+ "see_doctor_if": [str],
  "spoken_summary": str}
 "spoken_summary": 2-4 sentences in a warm, natural, conversational tone as if talking to a colleague (no lists,
 no markdown, no citations): what the report shows, the main abnormal values, and the most likely possibilities.
+User-friendly fields (plain language a patient understands, each item ONE short sentence, max ~15 words, no jargon):
+"severity": overall complexity of what the report shows ("normal" when every value is in range); "severity_reason":
+one short sentence why. "key_points": 3-5 bite-sized takeaways. "plain_findings": one entry per abnormal value,
+"meaning" = what it means in everyday words. "precautions": 3-6 practical things to do given the likely conditions
+and their seriousness (diet, hydration, rest, monitoring, follow-up). "avoid": 3-6 things to avoid (foods, habits,
+activities, self-medication). "lifestyle": 2-4 healthy habits that help. "see_doctor_if": 2-4 warning signs that need
+prompt medical attention. Scale the advice to the severity; for a normal report give general wellness advice.
+Never name drug doses.
 Rules: base differentials on sound clinical reasoning, not only on the topics of the evidence passages. An abnormal lab value is NOT a diagnosis — phrase differentials as possibilities to consider. Cite only
 the evidence IDs provided (cite them whenever a passage is relevant); if no passage supports a statement, cite nothing and say it is general knowledge.
 Never invent reference ranges, drug doses, guidelines or references. Never prescribe. Do not state confidence
@@ -191,6 +207,8 @@ def interpret(db: Session, analysis: Analysis, question: str | None = None) -> d
     def clean_ids(ids):
         return [i for i in (ids or []) if i in valid_ids]
 
+    for k in ("key_points", "precautions", "avoid", "lifestyle", "see_doctor_if", "suggested_further_evaluation"):
+        data[k] = llm.as_list(data.get(k))
     for f in data.get("abnormal_findings") or []:
         f["evidence"] = clean_ids(f.get("evidence"))
     for d in data.get("differential_considerations") or []:

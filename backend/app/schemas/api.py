@@ -57,3 +57,7 @@ class SymptomsIn(BaseModel):
     text: str = Field(min_length=2, max_length=3000)
     patient_id: int | None = None
     analysis_id: int | None = None
+
+
+class DiseaseIn(BaseModel):
+    disease: str = Field(min_length=2, max_length=200)

@@ -63,6 +63,36 @@ export interface Interpretation {
   model?: string
   generated_at?: string
   question?: string | null
+  severity?: Severity
+  severity_reason?: string
+  key_points?: string[]
+  plain_findings?: { test: string; status: string; meaning: string }[]
+  precautions?: string[]
+  avoid?: string[]
+  lifestyle?: string[]
+  see_doctor_if?: string[]
+}
+
+export type Severity = 'normal' | 'mild' | 'moderate' | 'serious' | 'varies'
+
+export interface DiseaseInfo {
+  input: string
+  name: string
+  overview: string
+  severity?: Severity
+  symptoms: string[]
+  causes: string[]
+  risk_factors: string[]
+  prevention: string[]
+  precautions: string[]
+  avoid: string[]
+  diagnostic_tests: string[]
+  see_doctor_if: string[]
+  spoken_summary?: string
+  evidence: Evidence[]
+  warnings: string[]
+  limitations: string[]
+  model: string
 }
 
 export interface Analysis {
@@ -133,6 +163,12 @@ export interface SymptomResult {
   recommended_evaluation?: string[]
   follow_up_questions?: string[]
   spoken_summary?: string
+  severity?: Severity
+  causes?: string[]
+  prevention?: string[]
+  precautions?: string[]
+  avoid?: string[]
+  see_doctor_if?: string[]
   evidence: Evidence[]
   warnings: string[]
   limitations: string[]

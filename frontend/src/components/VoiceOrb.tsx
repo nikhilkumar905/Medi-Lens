@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Mic, MicOff, Loader2, Square } from 'lucide-react'
 import type { MicState } from '../hooks/useVoice'
 
-export type OrbMode = 'off' | 'listening' | 'hearing' | 'thinking' | 'speaking' | 'error'
+export type OrbMode = 'off' | 'paused' | 'listening' | 'hearing' | 'thinking' | 'speaking' | 'error'
 
 interface Props {
   mode: OrbMode
@@ -12,7 +12,8 @@ interface Props {
   onClick: () => void
 }
 
-export function orbMode(mic: MicState, speaking: boolean, thinking: boolean): OrbMode {
+export function orbMode(mic: MicState, speaking: boolean, thinking: boolean, paused = false): OrbMode {
+  if (paused) return 'paused'
   if (speaking) return 'speaking'
   if (thinking || mic === 'processing' || mic === 'starting') return 'thinking'
   if (mic === 'recording') return 'hearing'
@@ -22,7 +23,7 @@ export function orbMode(mic: MicState, speaking: boolean, thinking: boolean): Or
 }
 
 const LABEL: Record<OrbMode, string> = {
-  off: 'Tap to talk', listening: "I'm listening…", hearing: 'Hearing you…', thinking: 'Thinking…',
+  off: 'Tap to talk', paused: 'Paused: not listening. Tap to resume', listening: "I'm listening…", hearing: 'Hearing you…', thinking: 'Thinking…',
   speaking: 'Speaking — tap to stop', error: 'Microphone unavailable — tap to retry',
 }
 
@@ -48,7 +49,7 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
     return () => cancelAnimationFrame(raf)
   }, [analyser, mode])
 
-  const active = mode !== 'off' && mode !== 'error'
+  const active = mode !== 'off' && mode !== 'error' && mode !== 'paused'
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="relative flex h-56 w-56 items-center justify-center">
@@ -75,7 +76,8 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
         >
           <div ref={coreRef} className="absolute inset-0 rounded-full transition-[box-shadow] duration-75"
             style={{
-              background: mode === 'speaking' ? 'radial-gradient(circle at 30% 30%, #a78bfa, #7c3aed 55%, #4c1d95)'
+              background: mode === 'paused' ? 'radial-gradient(circle at 30% 30%, #cbd5e1, #64748b 60%, #334155)'
+                : mode === 'speaking' ? 'radial-gradient(circle at 30% 30%, #a78bfa, #7c3aed 55%, #4c1d95)'
                 : mode === 'error' ? 'radial-gradient(circle at 30% 30%, #fda4af, #e11d48 60%, #881337)'
                   : active ? 'radial-gradient(circle at 30% 30%, #5eead4, #1a929e 55%, #0a3a40)'
                     : 'radial-gradient(circle at 30% 30%, #67c6cf, #137582 60%, #0a3a40)',
@@ -85,13 +87,13 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
           <span className="relative">
             {mode === 'thinking' ? <Loader2 size={44} className="animate-spin" />
               : mode === 'speaking' ? <SpeakingBars />
-                : mode === 'off' || mode === 'error' ? (mode === 'error' ? <MicOff size={44} /> : <Mic size={46} />)
+                : mode === 'off' || mode === 'error' || mode === 'paused' ? (mode === 'off' ? <Mic size={46} /> : <MicOff size={44} />)
                   : <Mic size={46} />}
           </span>
         </motion.button>
       </div>
       <motion.div key={mode} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-        className={`flex items-center gap-1.5 text-sm font-medium ${mode === 'error' ? 'text-rose-600' : 'text-slate-600'}`}>
+        className={`flex items-center gap-1.5 text-sm font-medium ${mode === 'error' ? 'text-rose-600' : mode === 'paused' ? 'rounded-full bg-slate-200 px-3 py-1 text-slate-700' : 'text-slate-600'}`}>
         {mode === 'speaking' && <Square size={12} className="fill-current" />}
         {LABEL[mode]}
       </motion.div>

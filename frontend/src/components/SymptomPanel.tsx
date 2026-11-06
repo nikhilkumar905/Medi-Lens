@@ -1,7 +1,8 @@
 import { motion } from 'framer-motion'
-import { AlertOctagon, BookOpen, ClipboardList, HelpCircle, Loader2, Stethoscope } from 'lucide-react'
+import { AlertOctagon, BookOpen, ClipboardList, HelpCircle, Loader2, MessageCircleQuestion, Stethoscope } from 'lucide-react'
 import type { SymptomResult } from '../types'
 import { EvidenceList } from './AnalysisPanel'
+import { CareGrid, SeverityMeter } from './CareCards'
 
 export const LIKELIHOOD_STYLE: Record<string, string> = {
   'more likely': 'bg-rose-100 text-rose-700 border-rose-200',
@@ -26,7 +27,7 @@ export function ConditionCards({ items }: { items: { condition: string; likeliho
   )
 }
 
-export default function SymptomPanel({ result, busy, input }: { result: SymptomResult | null; busy: boolean; input: string | null }) {
+export default function SymptomPanel({ result, busy, input, onQuestion }: { result: SymptomResult | null; busy: boolean; input: string | null; onQuestion?: (q: string) => void }) {
   if (busy) return (
     <div className="flex flex-col items-center gap-3 py-16 text-slate-500">
       <Loader2 className="animate-spin text-brand-600" size={32} />
@@ -61,9 +62,11 @@ export default function SymptomPanel({ result, busy, input }: { result: SymptomR
         {ex.context && <p className="mt-1.5 text-xs text-slate-500">{ex.context}</p>}
       </div>
 
+      <SeverityMeter level={result.severity} title="How urgent does it look?" />
+
       {!!result.possible_conditions?.length && (
         <section>
-          <h3 className="mb-2 text-sm font-semibold">Possible conditions</h3>
+          <h3 className="mb-2 text-sm font-semibold">Possible conditions (prediction, not a diagnosis)</h3>
           <ConditionCards items={result.possible_conditions} />
         </section>
       )}
@@ -75,6 +78,21 @@ export default function SymptomPanel({ result, busy, input }: { result: SymptomR
         </section>
       )}
 
+      <CareGrid causes={result.causes} precautions={result.precautions} avoid={result.avoid} prevention={result.prevention} seeDoctor={result.see_doctor_if} />
+
+      {!!result.follow_up_questions?.length && onQuestion && (
+        <section className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4">
+          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-brand-800"><MessageCircleQuestion size={16} />Help me narrow it down — tap a question and answer by voice</h3>
+          <div className="flex flex-wrap gap-2">
+            {result.follow_up_questions.map((q, i) => (
+              <motion.button key={i} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.06 }}
+                whileHover={{ scale: 1.03 }} onClick={() => onQuestion(q)}
+                className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-left text-sm text-brand-800 shadow-sm hover:border-brand-400">{q}</motion.button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="grid gap-3 md:grid-cols-2">
         {!!result.recommended_evaluation?.length && (
           <section className="rounded-xl border border-slate-200 p-3">
@@ -82,7 +100,7 @@ export default function SymptomPanel({ result, busy, input }: { result: SymptomR
             <ul className="list-disc pl-5 text-sm">{result.recommended_evaluation.map((r, i) => <li key={i}>{r}</li>)}</ul>
           </section>
         )}
-        {!!result.follow_up_questions?.length && (
+        {!!result.follow_up_questions?.length && !onQuestion && (
           <section className="rounded-xl border border-slate-200 p-3">
             <h3 className="mb-1 flex items-center gap-1.5 text-sm font-semibold"><HelpCircle size={15} className="text-brand-600" />Questions to ask next</h3>
             <ul className="list-disc pl-5 text-sm">{result.follow_up_questions.map((r, i) => <li key={i}>{r}</li>)}</ul>

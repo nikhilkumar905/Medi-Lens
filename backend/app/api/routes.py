@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import create_token, require_doctor, verify_credentials
 from app.models.entities import Analysis, AuditEvent, Document, Patient, Report
-from app.schemas.api import (AnalysisUpdate, AskIn, CommandIn, InterpretIn, LoginIn, PatientIn, RouteIn, SymptomsIn)
+from app.schemas.api import (AnalysisUpdate, AskIn, CommandIn, InterpretIn, LoginIn, PatientIn, RouteIn, SymptomsIn, DiseaseIn)
 from app.services.dicom import dicom_service
 from app.services.documents import analysis as analysis_svc
 from app.services.documents import extractor, file_finder, local_picker, storage
@@ -467,4 +467,11 @@ def analyze_symptoms(body: SymptomsIn, db: Session = Depends(get_db), doctor: st
     res = _llm_errors(lambda: symptoms_svc.analyze_symptoms(db, body.text, body.patient_id, labs,
                                                              patient.name if patient else None))
     audit(db, doctor, "symptoms_analyzed", f"patient:{body.patient_id}" if body.patient_id else None, text=body.text[:200])
+    return res
+
+
+@api.post("/knowledge/disease")
+def disease_info(body: DiseaseIn, db: Session = Depends(get_db), doctor: str = Depends(require_doctor)):
+    res = _llm_errors(lambda: symptoms_svc.disease_info(db, body.disease))
+    audit(db, doctor, "disease_info", None, disease=body.disease[:200])
     return res

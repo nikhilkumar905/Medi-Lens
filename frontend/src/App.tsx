@@ -361,7 +361,7 @@ export default function App({ onSimple }: { onSimple?: () => void } = {}) {
   }
 
   const toggleMic = () => {
-    if (voice.mic === 'off' || voice.mic === 'error') { void voice.start(); greet() } else voice.stop()
+    if (voice.paused || voice.mic === 'off' || voice.mic === 'error') { void voice.resume(); greet() } else voice.pause()
   }
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -557,7 +557,7 @@ export default function App({ onSimple }: { onSimple?: () => void } = {}) {
         </section>
 
         <div className="min-h-[480px] lg:min-h-0">
-          <VoiceAssistant mic={voice.mic} speaking={voice.speaking} error={voice.error} analyser={voice.analyserRef} messages={messages} thinking={thinking}
+          <VoiceAssistant mic={voice.mic} paused={voice.paused} speaking={voice.speaking} error={voice.error} analyser={voice.analyserRef} messages={messages} thinking={thinking}
             llmReady={llmReady} onToggleMic={toggleMic} onStopSpeaking={voice.stopSpeaking} onSend={t => { greeted.current = true; void handleCommand(t) }} />
         </div>
       </main>

@@ -3,6 +3,27 @@ import { api } from '../services/api'
 
 export type MicState = 'off' | 'starting' | 'listening' | 'recording' | 'processing' | 'error'
 
+const PAUSE_KEY = 'medlens_voice_paused'
+let cachedVoice: SpeechSynthesisVoice | null | undefined
+
+/** Pick the assistant's voice once (waiting for the browser's voice list to load) and reuse it everywhere. */
+function assistantVoice(language?: string): Promise<SpeechSynthesisVoice | null> {
+  if (cachedVoice !== undefined && !language) return Promise.resolve(cachedVoice)
+  const choose = (voices: SpeechSynthesisVoice[]) => {
+    if (language) return voices.find(v => v.lang.toLowerCase().startsWith(language.toLowerCase())) || null
+    const en = voices.filter(v => /^en[-_](US|GB|IN)/i.test(v.lang))
+    return en.find(v => /Natural|Neural|Online/i.test(v.name)) || en.find(v => /Google/i.test(v.name)) ||
+      en.find(v => v.default) || en[0] || voices.find(v => v.lang.startsWith('en')) || voices[0] || null
+  }
+  return new Promise(resolve => {
+    const done = (v: SpeechSynthesisVoice | null) => { if (!language) cachedVoice = v; resolve(v) }
+    const now = window.speechSynthesis.getVoices()
+    if (now.length) return done(choose(now))
+    const t = setTimeout(() => done(choose(window.speechSynthesis.getVoices())), 1500)
+    window.speechSynthesis.addEventListener('voiceschanged', () => { clearTimeout(t); done(choose(window.speechSynthesis.getVoices())) }, { once: true })
+  })
+}
+
 interface Options {
   onUtterance: (text: string, uncertain: boolean) => void
   language?: string
@@ -30,76 +51,65 @@ export function useVoice({ onUtterance, language }: Options) {
   const cbRef = useRef(onUtterance)
   cbRef.current = onUtterance
 
-  const audioRef = useRef<HTMLAudioElement | null>(null)
   const speakTokenRef = useRef(0)
-  const serverTtsRef = useRef(true) // disabled for the session after the first failure
+  // Paused = the assistant neither listens nor speaks until the user resumes. Remembered across reloads/views.
+  const [paused, setPausedState] = useState<boolean>(() => { try { return localStorage.getItem(PAUSE_KEY) === '1' } catch { return false } })
+  const pausedRef = useRef(paused)
+  // Bumped on every start/stop: audio recorded or transcribed in an older session is thrown away.
+  const sessionRef = useRef(0)
+  const setPaused = (v: boolean) => {
+    pausedRef.current = v
+    setPausedState(v)
+    try { localStorage.setItem(PAUSE_KEY, v ? '1' : '0') } catch { /* storage unavailable */ }
+  }
 
   const stopSpeaking = useCallback(() => {
     speakTokenRef.current++
     window.speechSynthesis?.cancel()
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
     speakingRef.current = false
     setSpeaking(false)
   }, [])
 
-  const browserSpeak = useCallback((clean: string, token: number) => {
-    if (!('speechSynthesis' in window) || token !== speakTokenRef.current) return
-    const u = new SpeechSynthesisUtterance(clean)
-    u.rate = 1.03
-    if (language) u.lang = language
-    const voices = window.speechSynthesis.getVoices()
-    const preferred = voices.find(v => /en-(US|GB|IN)/.test(v.lang) && /Natural|Neural|Online/i.test(v.name)) ||
-      voices.find(v => /en-(US|GB|IN)/.test(v.lang) && /Google/i.test(v.name)) || voices.find(v => v.lang.startsWith('en'))
-    if (preferred && !language) u.voice = preferred
-    u.onstart = () => { speakingRef.current = true; setSpeaking(true) }
-    u.onend = u.onerror = () => { if (token === speakTokenRef.current) { speakingRef.current = false; setSpeaking(false) } }
-    window.speechSynthesis.speak(u)
-  }, [language])
-
-  /** Natural Groq TTS, sentence by sentence (next chunk prefetched); browser voice as fallback. */
+  /**
+   * ONE voice for the whole app: the browser's speech engine with a single voice chosen once
+   * (cached module-wide, so every screen and every reply sounds the same). Text is spoken
+   * sentence by sentence through one queue; starting a new reply always cancels the old one,
+   * so two voices can never overlap.
+   */
   const speak = useCallback(async (text: string) => {
-    if (!text?.trim()) return
+    if (!text?.trim() || !('speechSynthesis' in window) || pausedRef.current) return
     lastSpokenRef.current = text
     stopSpeaking()
     const token = speakTokenRef.current
-    const clean = text.replace(/\[E\d+\]/g, '').replace(/[*#_`]/g, '').trim()
-    if (!serverTtsRef.current) return browserSpeak(clean, token)
+    const clean = text.replace(/\[E\d+\]/g, '').replace(/[*#_`]/g, '').replace(/\s+/g, ' ').trim()
+    const voice = await assistantVoice(language)
+    if (token !== speakTokenRef.current) return
+    // Chrome stops long utterances after ~15 s, so queue short sentence groups.
     const chunks: string[] = []
     for (const sent of clean.match(/[^.!?]+[.!?]*\s*/g) || [clean]) {
       const last = chunks[chunks.length - 1]
-      if (last && last.length + sent.length < 220) chunks[chunks.length - 1] = last + sent
+      if (last && last.length + sent.length < 200) chunks[chunks.length - 1] = last + sent
       else chunks.push(sent)
     }
     speakingRef.current = true
     setSpeaking(true)
-    try {
-      let next = api.speak(chunks[0].trim())
-      for (let i = 0; i < chunks.length; i++) {
-        const blob = await next
-        if (token !== speakTokenRef.current) return
-        if (i + 1 < chunks.length) next = api.speak(chunks[i + 1].trim())
-        const url = URL.createObjectURL(blob)
-        await new Promise<void>((resolve) => {
-          const a = new Audio(url)
-          audioRef.current = a
-          a.onended = a.onerror = a.onpause = () => resolve()
-          a.play().catch(() => resolve())
-        })
-        URL.revokeObjectURL(url)
-        if (token !== speakTokenRef.current) return
+    chunks.forEach((c, i) => {
+      const u = new SpeechSynthesisUtterance(c.trim())
+      if (voice) { u.voice = voice; u.lang = voice.lang } else if (language) u.lang = language
+      u.rate = 1.02
+      u.pitch = 1
+      if (i === chunks.length - 1) {
+        u.onend = u.onerror = () => { if (token === speakTokenRef.current) { speakingRef.current = false; setSpeaking(false) } }
       }
-      speakingRef.current = false
-      setSpeaking(false)
-    } catch {
-      if (token !== speakTokenRef.current) return
-      serverTtsRef.current = false // e.g. TTS model terms not accepted yet
-      browserSpeak(clean, token)
-    }
-  }, [stopSpeaking, browserSpeak])
+      window.speechSynthesis.speak(u)
+    })
+  }, [stopSpeaking, language])
 
   const repeat = useCallback(() => { if (lastSpokenRef.current) speak(lastSpokenRef.current) }, [speak])
 
   const stop = useCallback(() => {
+    sessionRef.current++ // discard anything still being recorded or transcribed
+    busyRef.current = false
     cancelAnimationFrame(rafRef.current)
     if (recRef.current && recRef.current.state !== 'inactive') recRef.current.stop()
     streamRef.current?.getTracks().forEach(t => t.stop())
@@ -111,6 +121,8 @@ export function useVoice({ onUtterance, language }: Options) {
   }, [])
 
   const start = useCallback(async () => {
+    if (streamRef.current) return
+    const session = ++sessionRef.current
     setError(null)
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('This browser does not support microphone access. Use a recent Chrome, Edge or Firefox over http://localhost or HTTPS.')
@@ -129,6 +141,7 @@ export function useVoice({ onUtterance, language }: Options) {
       setMic('error')
       return
     }
+    if (session !== sessionRef.current || pausedRef.current) { stream.getTracks().forEach(t => t.stop()); setMic('off'); return }
     streamRef.current = stream
     stream.getAudioTracks()[0].addEventListener('ended', () => {
       setError('Microphone disconnected.')
@@ -159,18 +172,21 @@ export function useVoice({ onUtterance, language }: Options) {
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
       rec.ondataavailable = e => e.data.size && chunks.push(e.data)
       rec.onstop = async () => {
+        if (session !== sessionRef.current || pausedRef.current) { busyRef.current = false; return }
         const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' })
         const dur = performance.now() - recStart
         if (dur < 500 || blob.size < 2000) { busyRef.current = false; if (streamRef.current) setMic('listening'); return }
         setMic('processing')
         try {
           const r = await api.transcribe(blob)
-          if (r.text.trim()) cbRef.current(r.text.trim(), r.uncertain)
+          if (r.text.trim() && session === sessionRef.current && !pausedRef.current) cbRef.current(r.text.trim(), r.uncertain)
         } catch (e) {
           setError((e as Error).message)
         } finally {
-          busyRef.current = false
-          if (streamRef.current) setMic('listening')
+          if (session === sessionRef.current) {
+            busyRef.current = false
+            if (streamRef.current) setMic('listening')
+          }
         }
       }
       rec.start(250)
@@ -211,7 +227,25 @@ export function useVoice({ onUtterance, language }: Options) {
     rafRef.current = requestAnimationFrame(tick)
   }, [stop, stopSpeaking])
 
+  /** User pressed pause: stop listening AND speaking; nothing is heard or said until resume(). */
+  const pause = useCallback(() => {
+    setPaused(true)
+    stopSpeaking()
+    stop()
+  }, [stop, stopSpeaking])
+
+  /** User pressed resume: start listening again. */
+  const resume = useCallback(async () => {
+    setPaused(false)
+    await start()
+  }, [start])
+
+  /** Automatic mic start (e.g. after tapping the body). Does nothing while the user has paused. */
+  const startIfAllowed = useCallback(async () => {
+    if (!pausedRef.current) await start()
+  }, [start])
+
   useEffect(() => () => { stop(); window.speechSynthesis?.cancel() }, [stop])
 
-  return { mic, speaking, error, setError, start, stop, speak, stopSpeaking, repeat, analyserRef, lastSpoken: lastSpokenRef }
+  return { mic, speaking, paused, error, setError, start, stop, pause, resume, startIfAllowed, speak, stopSpeaking, repeat, analyserRef, lastSpoken: lastSpokenRef }
 }

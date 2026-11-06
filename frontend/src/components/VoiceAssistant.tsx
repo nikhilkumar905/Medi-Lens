@@ -7,6 +7,7 @@ export interface ChatMsg { role: 'user' | 'assistant' | 'system'; content: strin
 
 interface Props {
   mic: MicState
+  paused?: boolean
   speaking: boolean
   error: string | null
   analyser: React.RefObject<AnalyserNode | null>
@@ -82,12 +83,12 @@ export default function VoiceAssistant(p: Props) {
               transition={{ repeat: Infinity, duration: 2.2 }} />
           )}
           <button onClick={p.onToggleMic} disabled={!p.llmReady}
-            title={p.llmReady ? (on ? 'Turn microphone off' : 'Turn microphone on') : 'Backend GROQ_API_KEY missing'}
+            title={p.llmReady ? (on ? 'Pause the assistant' : 'Resume the assistant') : 'Backend GROQ_API_KEY missing'}
             className={`relative flex h-16 w-16 items-center justify-center rounded-full text-white shadow-lg transition disabled:opacity-40 ${on ? 'bg-brand-600 hover:bg-brand-700' : 'bg-slate-500 hover:bg-slate-600'}`}>
             {p.mic === 'processing' || p.mic === 'starting' ? <Loader2 className="animate-spin" /> : on ? <Mic size={26} /> : <MicOff size={26} />}
           </button>
         </div>
-        <div className={`text-xs font-medium ${p.mic === 'error' ? 'text-rose-600' : 'text-slate-600'}`}>{STATUS[p.mic]}</div>
+        <div className={`text-xs font-medium ${p.mic === 'error' ? 'text-rose-600' : 'text-slate-600'}`}>{p.paused ? 'Paused — not listening. Tap the mic to resume' : STATUS[p.mic]}</div>
         <Waveform analyser={p.analyser} active={on} />
         <div className="flex h-8 items-center gap-2">
           {p.speaking ? (

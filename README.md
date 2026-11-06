@@ -10,7 +10,9 @@ A voice-first medical report assistant for one doctor, built from the *MedLens A
 
 | Area | What it does |
 |---|---|
-| **Single-page workspace** | Interactive SVG anatomy (front/back, zoom, 30 regions) · workflow area · voice assistant panel |
+| **Guided home flow** | Animated anatomy figure (scan beam, beating heart). Tap the body or the mic and the assistant asks *"How can I help you?"*: **(1) Analyze a medical report**, either by uploading a file (browse, drag-and-drop, or by voice: "the CBC report in Downloads") or by showing it to the camera; **(2) Ask about a disease or get advice**, either by checking symptoms (tap chips or speak) to see possible conditions, or by learning about a named disease |
+| **Friendly results** | Animated cards instead of long paragraphs: a severity meter, key points, out-of-range values with low/normal/high bars and a plain-language meaning, possible conditions, and colour-coded cards for **precautions**, **things to avoid**, **prevention**, **causes**, **healthy habits** and **when to see a doctor**. Tappable follow-up questions are answered by voice |
+| **Single-page workspace** (Advanced) | Interactive SVG anatomy (front/back, zoom, 30 regions) · workflow area · voice assistant panel |
 | **Voice** | Hands-free mic with voice-activity detection, transcription by Groq Whisper, spoken replies via browser TTS, barge-in (talking interrupts the assistant), time-of-day greeting, confirmation by saying "yes"/"no" |
 | **Voice commands** | Groq function calling over 17 whitelisted UI actions (`select_body_part`, `open_report_upload`, `analyze_medical_document`, `generate_medical_report`, …). The server validates every tool call (unknown actions and invalid arguments are rejected), and sensitive actions need confirmation |
 | **PDF extraction** | PyMuPDF native text → **text-quality inspection** (private-use glyphs, U+FFFD, symbol density, non-word tokens, Type3/custom font encodings, scanned-image coverage) → OCR **only on unreliable pages** (300 DPI render → OpenCV denoise/deskew/binarise → Tesseract). Page numbers, line cells and bounding boxes are preserved |
@@ -61,7 +63,9 @@ cd backend && .venv\Scripts\python -m pytest -q
 There are 23 tests. They cover text-quality detection, row and unit preservation, range evaluation, upload validation, auth, the approval gate, PDF output, comparison, tool-call validation, the model router, and the LLM paths with Groq mocked (hallucinated values flagged, PHI redaction, consent gate).
 
 ## Example voice commands
-"Investigate the lungs" · "Open report upload" · "Upload a CT scan" · "Open the camera" / "Capture the image" · "Analyze the document" · "Explain the abnormal findings" · "Compare previous reports" · "Search PubMed for iron deficiency anemia" · "Read the findings" · "Generate a PDF" → "yes" · "Download the report" · "Stop speaking" · "Repeat that" · "Go back" · "Cancel"
+Guided flow: "I need help" · "One" / "Analyze my report" · "Two" / "Ask about a disease" · "Upload a file" · "Use the camera" → "Capture" · "Tell me about dengue" · "I have fever and joint pain for 3 days" · "Read the results" · "Go back" · "Main menu"
+
+Advanced workspace: "Investigate the lungs" · "Open report upload" · "Upload a CT scan" · "Open the camera" / "Capture the image" · "Analyze the document" · "Explain the abnormal findings" · "Compare previous reports" · "Search PubMed for iron deficiency anemia" · "Read the findings" · "Generate a PDF" → "yes" · "Download the report" · "Stop speaking" · "Repeat that" · "Go back" · "Cancel"
 
 > Browsers only open file dialogs after a real click. When you say "upload a report", the drop zone pulses, and one click opens the picker.
 

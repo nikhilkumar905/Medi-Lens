@@ -20,7 +20,7 @@ export const REGION_GROUP: Record<string, string> = {
   knees: 'Lower body', feet: 'Lower body', skin: 'Skin',
 }
 
-const ORGAN_COLOR: Record<string, string> = {
+export const ORGAN_COLOR: Record<string, string> = {
   brain: '#f4a6b8', eyes: '#7cc4e8', ears: '#f3c19b', nose: '#f3c19b', mouth: '#e57373', jaw: '#e8d9c0',
   neck: '#f1c9a5', heart: '#e53950', lungs: '#f48fa3', chest: '#fde2d3', shoulders: '#e8d9c0', liver: '#9c4a3c',
   stomach: '#f0a875', pancreas: '#f6d28b', kidneys: '#b5525d', gallbladder: '#7fb069', spleen: '#8e4a6e',
@@ -29,7 +29,7 @@ const ORGAN_COLOR: Record<string, string> = {
   knees: '#e8d9c0', feet: '#f1c9a5', skin: '#f6d5bd',
 }
 
-type Shape = { id: string; el: 'ellipse' | 'path' | 'rect' | 'circle'; p: Record<string, string | number>; stroke?: boolean }
+export type Shape = { id: string; el: 'ellipse' | 'path' | 'rect' | 'circle'; p: Record<string, string | number>; stroke?: boolean }
 
 const mirror = (d: string) => d.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, (_, x, y) => `${300 - Number(x)} ${y}`)
 const ARM = 'M 86 138 C 70 146 64 176 62 214 L 54 296 C 50 318 48 338 50 358 L 64 360 C 66 340 70 320 75 298 L 88 228 Z'
@@ -51,7 +51,7 @@ const SILHOUETTE: Shape[] = [
   { id: 'skin', el: 'ellipse', p: { cx: 150, cy: 58, rx: 36, ry: 44 } },
 ]
 
-const FRONT: Shape[] = [
+export const FRONT: Shape[] = [
   ...SILHOUETTE,
   { id: 'brain', el: 'path', p: { d: 'M 124 50 C 122 30 136 18 150 18 C 166 18 180 30 176 50 C 170 44 160 46 150 44 C 140 46 130 44 124 50 Z' } },
   { id: 'eyes', el: 'ellipse', p: { cx: 137, cy: 62, rx: 6, ry: 4 } },
@@ -81,7 +81,7 @@ const FRONT: Shape[] = [
   { id: 'reproductive', el: 'ellipse', p: { cx: 150, cy: 360, rx: 8, ry: 6 } },
 ]
 
-const BACK: Shape[] = [
+export const BACK: Shape[] = [
   ...SILHOUETTE,
   { id: 'skull', el: 'ellipse', p: { cx: 150, cy: 54, rx: 31, ry: 38 } },
   { id: 'brain', el: 'ellipse', p: { cx: 150, cy: 48, rx: 24, ry: 26 } },
