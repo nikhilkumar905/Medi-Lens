@@ -1,4 +1,4 @@
-"""MedLens AI — FastAPI application entry point."""
+"""MedLens — FastAPI application entry point."""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,7 +17,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="MedLens AI", version="1.0.0", lifespan=lifespan,
+app = FastAPI(title="MedLens", version="1.0.0", lifespan=lifespan,
               description="Voice-first medical document assistant (Groq LLM + RAG). Decision support only.")
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])

@@ -9,6 +9,7 @@ The dialog runs in a separate Python process so Tk never touches the server's th
 """
 import json
 import subprocess
+import threading
 import sys
 from pathlib import Path
 
@@ -39,22 +40,55 @@ class PickerUnavailable(RuntimeError):
     pass
 
 
+_lock = threading.Lock()
+_current: subprocess.Popen | None = None
+_cancelled: set[int] = set()
+
+
 def pick_file(category: str, timeout_s: int = 300, initialdir: str | None = None) -> Path | None:
+    """Show the dialog and wait for the user. Returns None if they cancel or the dialog is closed by cancel_pick()."""
+    global _current
+    cancel_pick()  # never stack two dialogs
     patterns = FILETYPES.get(category, FILETYPES["report"])
-    title = "MedLens AI — choose a " + ("medical report" if category in ("report", "previous") else category.upper() + " file")
+    title = "MedLens — choose a " + ("medical report" if category in ("report", "previous") else category.upper() + " file")
     try:
-        out = subprocess.run([sys.executable, "-c", _SCRIPT, title, json.dumps(patterns), initialdir or ""],
-                             capture_output=True, text=True, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        return None
+        proc = subprocess.Popen([sys.executable, "-c", _SCRIPT, title, json.dumps(patterns), initialdir or ""],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except OSError as e:
         raise PickerUnavailable(f"Could not open a file dialog: {e}")
-    if out.returncode != 0:
-        raise PickerUnavailable(f"File dialog failed: {out.stderr.strip()[-300:]}")
-    path = json.loads(out.stdout.strip().splitlines()[-1]).get("path")
+    with _lock:
+        _current = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return None
+    finally:
+        with _lock:
+            if _current is proc:
+                _current = None
+    if proc.pid in _cancelled:
+        _cancelled.discard(proc.pid)
+        return None
+    if proc.returncode != 0:
+        raise PickerUnavailable(f"File dialog failed: {stderr.strip()[-300:]}")
+    lines = stdout.strip().splitlines()
+    path = json.loads(lines[-1]).get("path") if lines else None
     if not path:
         return None
     p = Path(path)
     if p.suffix.lower() not in ALLOWED_EXT or not p.is_file():
         raise PickerUnavailable("Selected file type is not supported")
     return p
+
+
+def cancel_pick() -> bool:
+    """Close the open file dialog (e.g. the file was already opened by voice). Returns True if one was open."""
+    with _lock:
+        proc = _current
+    if proc is None or proc.poll() is not None:
+        return False
+    _cancelled.add(proc.pid)
+    proc.kill()  # ends the dialog process, which closes its window
+    return True

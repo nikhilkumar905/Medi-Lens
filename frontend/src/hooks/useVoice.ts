@@ -26,7 +26,10 @@ function assistantVoice(language?: string): Promise<SpeechSynthesisVoice | null>
 
 interface Options {
   onUtterance: (text: string, uncertain: boolean) => void
+  /** BCP-47 voice for spoken replies, e.g. "hi-IN" (omit for English) */
   language?: string
+  /** Whisper language for speech recognition: "en" | "hi" | "te" */
+  sttLanguage?: string
 }
 
 /**
@@ -36,7 +39,9 @@ interface Options {
  * Spoken replies use the browser's SpeechSynthesis. Talking while the assistant
  * speaks interrupts it (barge-in).
  */
-export function useVoice({ onUtterance, language }: Options) {
+export function useVoice({ onUtterance, language, sttLanguage }: Options) {
+  const sttRef = useRef(sttLanguage)
+  sttRef.current = sttLanguage
   const [mic, setMic] = useState<MicState>('off')
   const [speaking, setSpeaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,13 +81,14 @@ export function useVoice({ onUtterance, language }: Options) {
    * sentence by sentence through one queue; starting a new reply always cancels the old one,
    * so two voices can never overlap.
    */
-  const speak = useCallback(async (text: string) => {
+  const speak = useCallback(async (text: string, speakLang?: string) => {
     if (!text?.trim() || !('speechSynthesis' in window) || pausedRef.current) return
     lastSpokenRef.current = text
     stopSpeaking()
     const token = speakTokenRef.current
     const clean = text.replace(/\[E\d+\]/g, '').replace(/[*#_`]/g, '').replace(/\s+/g, ' ').trim()
-    const voice = await assistantVoice(language)
+    const lang = speakLang && !speakLang.startsWith('en') ? speakLang : language
+    const voice = await assistantVoice(lang)
     if (token !== speakTokenRef.current) return
     // Chrome stops long utterances after ~15 s, so queue short sentence groups.
     const chunks: string[] = []
@@ -95,7 +101,7 @@ export function useVoice({ onUtterance, language }: Options) {
     setSpeaking(true)
     chunks.forEach((c, i) => {
       const u = new SpeechSynthesisUtterance(c.trim())
-      if (voice) { u.voice = voice; u.lang = voice.lang } else if (language) u.lang = language
+      if (voice) { u.voice = voice; u.lang = voice.lang } else if (lang) u.lang = lang
       u.rate = 1.02
       u.pitch = 1
       if (i === chunks.length - 1) {
@@ -178,7 +184,7 @@ export function useVoice({ onUtterance, language }: Options) {
         if (dur < 500 || blob.size < 2000) { busyRef.current = false; if (streamRef.current) setMic('listening'); return }
         setMic('processing')
         try {
-          const r = await api.transcribe(blob)
+          const r = await api.transcribe(blob, sttRef.current)
           if (r.text.trim() && session === sessionRef.current && !pausedRef.current) cbRef.current(r.text.trim(), r.uncertain)
         } catch (e) {
           setError((e as Error).message)

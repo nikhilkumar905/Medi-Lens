@@ -97,7 +97,7 @@ def structure_document(doc: Document, allow_llm: bool = True) -> dict:
         result["warnings"].append("GROQ_API_KEY not configured — used deterministic parser only.")
         return result
     if not allow_llm:
-        result["warnings"].append("Patient has not consented to AI processing — external LLM not used.")
+        result["warnings"].append("Patient has not consented to automated analysis — only the basic parser was used.")
         return result
 
     numbered, idx = _numbered_lines(pages)
@@ -127,18 +127,21 @@ def structure_document(doc: Document, allow_llm: bool = True) -> dict:
             ref = None
         if unit and _norm(unit) not in line_n:
             unit = None
+        flag = r.get("flag") if r.get("flag") and _norm(str(r["flag"])) in line_n else None
         rows.append({
             "test_name": r["test_name"], "result": res, "unit": unit, "reference_interval": ref,
-            "flag": r.get("flag") if r.get("flag") and _norm(str(r["flag"])) in line_n else None,
-            "evaluation": evaluate(res, ref), "page": page["page"], "line_index": li, "bbox": ln.get("bbox"),
+            "flag": flag,
+            "evaluation": evaluate(res, ref, flag), "page": page["page"], "line_index": li, "bbox": ln.get("bbox"),
             "verification": "source-matched" if verified and not ln.get("low_confidence") else MANUAL,
             "source_line": ln["text"],
         })
         seen_lines.add((page["page"], li))
-    # keep deterministic rows the LLM skipped
+    # keep deterministic rows the LLM skipped, but only real lab rows: a narrative sentence such as
+    # "Walks 20 minutes" or "Page 1" has neither a unit nor a reference range
     for d in det_rows:
-        if (d["page"], d["line_index"]) not in seen_lines:
+        if (d["page"], d["line_index"]) not in seen_lines and (d.get("unit") or d.get("reference_interval")):
             rows.append(d)
+    rows = [r for r in rows if not _looks_like_prose(r)]
     rows.sort(key=lambda x: (x["page"], x["line_index"]))
 
     result.update({
@@ -156,8 +159,25 @@ def structure_document(doc: Document, allow_llm: bool = True) -> dict:
     return result
 
 
+_TIME_WORDS = {"day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "hrs",
+               "minute", "minutes", "min", "times", "time", "visits", "pack-years"}
+
+
+def _looks_like_prose(r: dict) -> bool:
+    """A sentence fragment picked up as a lab row, e.g. "recheck potassium and creatinine in | 2".
+    Real tests either have a unit, a reference range or a flag, or have a short name ("pH", "Specific gravity")."""
+    if r.get("reference_interval") or r.get("flag"):
+        return False
+    unit = str(r.get("unit") or "").strip().lower()
+    # "in 2 weeks", "every 3 months": a time span in a sentence, not a lab unit
+    if unit and unit not in _TIME_WORDS:
+        return False
+    bare_number = re.fullmatch(r"[<>≤≥]?\s*\d+(?:[.,]\d+)?", str(r.get("result") or "").strip()) is not None
+    return bare_number and len(str(r.get("test_name") or "").split()) >= 4
+
+
 def _evidence_query(structured: dict, question: str | None) -> str:
-    abn = [r["test_name"] for r in structured.get("rows", []) if r["evaluation"]["status"] in ("high", "low")]
+    abn = [r["test_name"] for r in structured.get("rows", []) if r["evaluation"]["status"] in ("high", "low", "abnormal")]
     parts = [question or "", structured.get("report_type") or ""] + abn[:6]
     return " ".join(p for p in parts if p).strip()
 
@@ -167,7 +187,7 @@ def gather_evidence(db: Session, structured: dict, patient_id: int | None, quest
     query = _evidence_query(structured, question)
     warnings = []
     if fetch_pubmed and query:
-        abn = [r for r in structured.get("rows", []) if r["evaluation"]["status"] in ("high", "low")]
+        abn = [r for r in structured.get("rows", []) if r["evaluation"]["status"] in ("high", "low", "abnormal")]
         terms = [f'("{r["test_name"]}"[tiab]) AND ({"elevated" if r["evaluation"]["status"] == "high" else "low"})'
                  for r in abn[:3]] or ([question] if question else [structured.get("report_type", "")])
         for t in terms:
@@ -214,7 +234,7 @@ def interpret(db: Session, analysis: Analysis, question: str | None = None) -> d
     for d in data.get("differential_considerations") or []:
         d["evidence"] = clean_ids(d.get("evidence"))
     data["limitations"] = list(data.get("limitations") or []) + [
-        "AI-generated interpretation — requires review and approval by the treating doctor.",
+        "Automatically generated interpretation — requires review and approval by the treating doctor.",
         "Clinical validation data not available for this LLM-based interpretation.",
     ]
     data["evidence"] = [{k: e.get(k) for k in ("id", "source_type", "source_id", "title", "page", "meta", "text")} for e in ev_list]

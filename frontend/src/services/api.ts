@@ -1,4 +1,4 @@
-import type { Analysis, Doc, Health, Patient, RouteDecision, UploadKind, VoiceAction, Evidence, SymptomResult, DiseaseInfo } from '../types'
+import type { Analysis, Doc, Health, Patient, RouteDecision, UploadKind, VoiceAction, Evidence, SymptomResult, DiseaseInfo, ImageDiagnosis } from '../types'
 
 const TOKEN_KEY = 'medlens_token'
 let token: string | null = sessionStorage.getItem(TOKEN_KEY)
@@ -57,6 +57,8 @@ export const api = {
 
   pickLocal: (category: UploadKind, patient_id: number | null, location?: string) =>
     req<Doc & { cancelled?: boolean }>('/documents/pick-local', { method: 'POST', body: json({ category, patient_id, location }) }),
+  /** Close the native file dialog opened by pickLocal (the file was chosen another way). */
+  cancelPick: () => req<{ closed: boolean }>('/documents/pick-local/cancel', { method: 'POST' }),
   findFiles: (location?: string, query?: string) =>
     req<FindResult>('/files/find', { method: 'POST', body: json({ location, query }) }),
   openFound: (token: string, category: UploadKind = 'report', patient_id: number | null = null) =>
@@ -80,14 +82,43 @@ export const api = {
     return req<{ text: string; uncertain: boolean; language: string | null }>('/voice/transcribe', { method: 'POST', body: fd })
   },
   speak: (text: string) => req<Blob>('/voice/speak', { method: 'POST', body: json({ text }) }),
-  command: (text: string, history: { role: string; content: string }[], context: object) =>
-    req<{ reply: string; actions: VoiceAction[]; errors: string[] }>('/voice/command', { method: 'POST', body: json({ text, history, context }) }),
+  command: (text: string, history: { role: string; content: string }[], context: object, language: string = 'en') =>
+    req<{ reply: string; actions: VoiceAction[]; errors: string[] }>('/voice/command', { method: 'POST', body: json({ text, history, context, language }) }),
 
   symptoms: (text: string, patient_id?: number | null, analysis_id?: number | null) =>
     req<SymptomResult>('/symptoms/analyze', { method: 'POST', body: json({ text, patient_id, analysis_id }) }),
   ask: (question: string, patient_id?: number | null) =>
     req<{ answer: string; evidence: Evidence[]; warnings: string[]; model: string }>('/knowledge/ask', { method: 'POST', body: json({ question, patient_id }) }),
   disease: (disease: string) => req<DiseaseInfo>('/knowledge/disease', { method: 'POST', body: json({ disease }) }),
+
+  analyzePhoto: (image: Blob, filename: string, body_part?: string | null, notes?: string) => {
+    const fd = new FormData()
+    fd.append('image', image, filename)
+    if (body_part) fd.append('body_part', body_part)
+    if (notes?.trim()) fd.append('notes', notes.trim())
+    return req<ImageDiagnosis>('/vision/analyze', { method: 'POST', body: fd })
+  },
+  translate: (language: 'hi' | 'te', data: object) =>
+    req<{ language: string; data: unknown }>('/translate', { method: 'POST', body: json({ language, data }) }),
+}
+
+/** Downscale a photo in the browser (max 1280 px, JPEG) so it uploads fast and fits the vision model's limit. */
+export async function shrinkImage(file: Blob, max = 1280): Promise<Blob> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = () => reject(new Error('This file is not an image the browser can open. Use a JPG, PNG or WEBP photo.'))
+      i.src = url
+    })
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight))
+    const c = document.createElement('canvas')
+    c.width = Math.max(32, Math.round(img.naturalWidth * scale))
+    c.height = Math.max(32, Math.round(img.naturalHeight * scale))
+    c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
+    return await new Promise<Blob>((resolve, reject) => c.toBlob(b => (b ? resolve(b) : reject(new Error('Could not process the image'))), 'image/jpeg', 0.88))
+  } finally { URL.revokeObjectURL(url) }
 }
 
 export interface CompareResult {

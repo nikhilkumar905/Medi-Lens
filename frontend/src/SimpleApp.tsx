@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  ArrowLeft, BookOpen, Camera, ChevronRight, FileSearch, FileText, FolderOpen, HeartPulse, Home, LayoutGrid, Loader2,
-  LogOut, Mic, RotateCcw, Send, Stethoscope, UploadCloud, X, type LucideIcon,
+  ArrowLeft, BookOpen, Camera, ChevronRight, FileText, FolderOpen, HeartPulse, Home, Loader2,
+  LogOut, Mic, RotateCcw, Send, UploadCloud, X,
 } from 'lucide-react'
-import { api, auth, saveBlob, uploadDocument, ApiError, type FoundFile } from './services/api'
-import type { Analysis, DiseaseInfo, Doc, Evidence, Health, SymptomResult, VoiceAction } from './types'
+import { api, auth, saveBlob, shrinkImage, uploadDocument, ApiError, type FoundFile } from './services/api'
+import type { Analysis, DiseaseInfo, Doc, Evidence, Health, ImageDiagnosis, SymptomResult, VoiceAction } from './types'
+import { ImageDiagnosisView, ImageIntake } from './components/ImageDiagnosis'
+import { LanguageSwitch, isNative, localize, useLang, useTranslated } from './i18n'
 import { useVoice } from './hooks/useVoice'
 import VoiceOrb, { orbMode } from './components/VoiceOrb'
 import ReportResult from './components/ReportResult'
@@ -16,7 +18,7 @@ import { BODY_PART_LABELS } from './components/AnatomyViewer'
 import { EvidenceList } from './components/AnalysisPanel'
 import { CameraCapture, ConfirmDialog, Login, type CameraHandle } from './components/Overlays'
 
-type Step = 'home' | 'menu' | 'report' | 'upload' | 'disease'
+type Step = 'home' | 'menu' | 'report' | 'upload' | 'disease' | 'image'
 
 type Result =
   | { kind: 'report'; doc: Doc; analysis: Analysis | null; stage: 'extracting' | 'analyzing' | 'interpreting' | 'done' }
@@ -24,34 +26,71 @@ type Result =
   | { kind: 'disease'; input: string; data: DiseaseInfo | null }
   | { kind: 'answer'; q: string; answer: string | null; evidence: Evidence[] }
   | { kind: 'files'; folder: string; files: FoundFile[] }
+  | { kind: 'image'; preview: string; data: ImageDiagnosis | null }
   | null
 
 interface Msg { role: 'user' | 'assistant'; content: string }
 
-const YES = /^(yes|yeah|yep|sure|ok|okay|confirm|go ahead|do it|please do)\b/i
-const NO = /^(no|nope|cancel|don'?t|never ?mind|stop)\b/i
+/** Normalise an utterance to " word word " so whole words/phrases in any script can be matched with includes(). */
+const norm = (s: string) => ' ' + s.toLowerCase().replace(/[,.!?।|"“”']+/g, ' ').replace(/\s+/g, ' ').trim() + ' '
+const hasAny = (s: string, words: string[]) => { const n = norm(s); return words.some(w => n.includes(' ' + w + ' ')) }
+const isOnly = (s: string, words: string[]) => words.includes(norm(s).trim())
+const startsWithAny = (s: string, words: string[]) => { const n = norm(s); return words.some(w => n.startsWith(' ' + w + ' ')) }
+
+// English, Hindi (Devanagari + Latin), Telugu
+const W = {
+  yes: ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'confirm', 'go ahead', 'do it', 'please do', 'हाँ', 'हां', 'हा', 'जी', 'जी हाँ', 'ठीक है', 'हाँ जी', 'haan', 'han', 'ji', 'theek hai', 'అవును', 'సరే', 'అవునండి', 'avunu', 'sare'],
+  no: ['no', 'nope', 'cancel', "don't", 'dont', 'never mind', 'nevermind', 'stop', 'नहीं', 'नही', 'ना', 'मत', 'रद्द', 'रहने दो', 'nahi', 'nahin', 'na', 'కాదు', 'వద్దు', 'లేదు', 'రద్దు', 'vaddu', 'kaadu'],
+  one: ['one', '1', 'first', 'एक', 'पहला', 'पहले', 'ek', 'pehla', 'ఒకటి', 'ఒకటో', 'మొదటి', 'మొదటిది', 'okati'],
+  two: ['two', '2', 'second', 'दो', 'दूसरा', 'दूसरे', 'doosra', 'రెండు', 'రెండో', 'రెండవ', 'రెండవది', 'rendu'],
+  three: ['three', '3', 'third', 'तीन', 'तीसरा', 'तीसरे', 'teen', 'teesra', 'మూడు', 'మూడో', 'మూడవ', 'మూడవది', 'moodu'],
+  back: ['back', 'go back', 'previous', 'वापस', 'पीछे', 'वापस जाओ', 'पीछे जाओ', 'wapas', 'peeche', 'వెనక్కి', 'వెనుకకు', 'వెనక్కి వెళ్ళు', 'venakki'],
+  home: ['home', 'start over', 'main menu', 'होम', 'शुरुआत', 'मुख्य मेनू', 'హోమ్', 'మొదటికి', 'ప్రధాన మెను'],
+  read: ['read', 'read it', 'read the results', 'read aloud', 'read results', 'पढ़ो', 'पढ़कर सुनाओ', 'सुनाओ', 'नतीजे सुनाओ', 'padho', 'sunao', 'చదువు', 'చదివి వినిపించు', 'వినిపించు', 'ఫలితాలు చదువు'],
+  capture: ['capture', 'take', 'click', 'snap', 'shoot', 'scan it', 'कैप्चर', 'फोटो लो', 'फ़ोटो लो', 'खींचो', 'फोटो खींचो', 'क्लिक', 'క్యాప్చర్', 'తీయి', 'తీయండి', 'ఫోటో తీయి', 'క్లిక్'],
+  hello: ['help', 'hello', 'hi', 'hey', 'start', 'begin', 'मदद', 'सहायता', 'नमस्ते', 'हेलो', 'शुरू', 'madad', 'namaste', 'సహాయం', 'నమస్కారం', 'హలో', 'ప్రారంభించు'],
+  photo: ['photo', 'picture', 'image', 'injury', 'injured', 'wound', 'skin', 'rash', 'फोटो', 'फ़ोटो', 'तस्वीर', 'चोट', 'घाव', 'त्वचा', 'चकत्ते', 'ఫోటో', 'గాయం', 'దెబ్బ', 'చర్మం', 'దద్దుర్లు'],
+  report: ['report', 'analyze', 'analyse', 'रिपोर्ट', 'जाँच', 'जांच', 'రిపోర్ట్', 'నివేదిక'],
+  disease: ['disease', 'symptom', 'symptoms', 'ask', 'advice', 'recommendation', 'बीमारी', 'लक्षण', 'सलाह', 'रोग', 'వ్యాధి', 'లక్షణాలు', 'సలహా', 'రోగం'],
+  camera: ['camera', 'scan', 'photo', 'show', 'कैमरा', 'फोटो', 'फ़ोटो', 'दिखाओ', 'కెమెరా', 'ఫోటో', 'చూపించు'],
+  upload: ['upload', 'file', 'browse', 'अपलोड', 'फ़ाइल', 'फाइल', 'అప్‌లోడ్', 'ఫైల్'],
+  stop: ['stop', 'stop speaking', 'be quiet', 'silence', 'रुको', 'चुप', 'बस', 'ఆపు', 'ఆగు', 'చాలు'],
+  // a short utterance containing any of these means "open the file picker"
+  fileOnly: ['file', 'files', 'upload', 'upload file', 'upload a file', 'upload the file', 'browse', 'document', 'pdf', 'open file', 'choose file', 'select file', 'pick file',
+    'फ़ाइल', 'फाइल', 'अपलोड', 'फ़ाइल अपलोड', 'फाइल अपलोड', 'फ़ाइल खोलो', 'फाइल खोलो', 'file upload', 'file kholo', 'dastavez', 'दस्तावेज़',
+    'ఫైల్', 'ఫైలు', 'అప్‌లోడ్', 'అప్లోడ్', 'ఫైల్ అప్‌లోడ్', 'ఫైల్ తెరువు', 'డాక్యుమెంట్'],
+}
+// polite / filler words ignored when deciding whether an utterance is *only* "file" / "upload"
+const FILLER = new Set(['a', 'an', 'the', 'please', 'plz', 'my', 'me', 'can', 'could', 'you', 'i', 'want', 'to', 'do', 'it', 'now', 'ok', 'okay',
+  'करो', 'कर', 'करें', 'कीजिए', 'दो', 'मेरी', 'मेरा', 'एक', 'अभी', 'karo', 'kar', 'karna', 'hai', 'है', 'करना',
+  'చేయి', 'చేయండి', 'చెయ్యి', 'నా', 'ఒక', 'ఇప్పుడు', 'చెయ్యండి'])
+const withoutFiller = (s: string) => norm(s).trim().split(' ').filter(w => !FILLER.has(w)).join(' ')
 const ORDINALS: Record<string, number> = { first: 1, one: 1, '1': 1, second: 2, two: 2, '2': 2, third: 3, three: 3, '3': 3,
-  fourth: 4, four: 4, '4': 4, fifth: 5, five: 5, '5': 5, sixth: 6, six: 6, '6': 6 }
+  fourth: 4, four: 4, '4': 4, fifth: 5, five: 5, '5': 5, sixth: 6, six: 6, '6': 6,
+  'एक': 1, 'पहला': 1, 'दो': 2, 'दूसरा': 2, 'तीन': 3, 'तीसरा': 3, 'चार': 4, 'पाँच': 5, 'पांच': 5, 'छह': 6,
+  'ఒకటి': 1, 'మొదటి': 1, 'రెండు': 2, 'రెండో': 2, 'మూడు': 3, 'మూడో': 3, 'నాలుగు': 4, 'ఐదు': 5, 'ఆరు': 6 }
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,.docx,.txt'
 
 const PROMPT: Record<Step, string> = {
   home: '',
-  menu: 'How can I help you? Say "one" to analyze a medical report, or "two" to ask about a disease or get recommendations.',
+  menu: 'How can I help you? Say "one" to analyze a medical report, "two" to ask about a disease or your symptoms, or "three" to check a photo of a disease or injury.',
   report: 'Would you like to upload a file, or show the report to the camera?',
   upload: 'Drop the file here or click to browse. You can also tell me where it is, like "the CBC report in Downloads".',
   disease: 'Tell me your symptoms, or name a disease you want to know about.',
+  image: 'Upload or take a close-up photo of the skin problem, wound or injury, and I will predict what it might be.',
 }
-const PARENT: Record<Step, Step> = { home: 'home', menu: 'home', report: 'menu', upload: 'report', disease: 'menu' }
+const PARENT: Record<Step, Step> = { home: 'home', menu: 'home', report: 'menu', upload: 'report', disease: 'menu', image: 'menu' }
 const TRAIL: Record<Step, string[]> = {
   home: [], menu: ['How can I help'], report: ['How can I help', 'Analyze report'],
-  upload: ['How can I help', 'Analyze report', 'Upload file'], disease: ['How can I help', 'Disease & advice'],
+  upload: ['How can I help', 'Analyze report', 'Upload file'], disease: ['How can I help', 'Disease & advice'], image: ['How can I help', 'Photo of disease / injury'],
 }
 const TRY: Record<Step, string[]> = {
   home: ['I need help'],
-  menu: ['Analyze my medical report', 'Ask about a disease'],
+  menu: ['Analyze my medical report', 'Ask about a disease', 'Check a photo of an injury'],
   report: ['Upload a file', 'Use the camera'],
   upload: ['Open the CBC report from Downloads', 'Analyze the latest report on my desktop', 'Read the results'],
   disease: ['I have fever and headache for 3 days', 'Tell me about diabetes', 'How do I prevent dengue?'],
+  image: ['Take a photo', 'Read the results', 'Go back'],
 }
 
 function greeting() {
@@ -59,28 +98,28 @@ function greeting() {
   return h < 12 ? 'Good morning!' : h < 17 ? 'Good afternoon!' : 'Good evening!'
 }
 
-function ChoiceCard({ n, Icon, title, desc, say, gradient, onClick, delay = 0 }: {
-  n: number; Icon: LucideIcon; title: string; desc: string; say: string; gradient: string; onClick: () => void; delay?: number
-}) {
+/** Voice-only step: shows what the assistant asked and that it is listening; the user answers by voice. */
+function VoiceStage({ question, heard, mode, children }: { question: string; heard: string | null; mode: string; children?: React.ReactNode }) {
+  const { t } = useLang()
+  const status = mode === 'speaking' ? t('Speaking — tap to stop') : mode === 'hearing' ? t('Hearing you…') : mode === 'thinking' ? t('Thinking…')
+    : mode === 'listening' ? t("I'm listening…") : mode === 'paused' ? t('Paused: not listening. Tap to resume') : t('Tap to talk')
   return (
-    <motion.button initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ delay, type: 'spring', stiffness: 120, damping: 16 }}
-      whileHover={{ y: -6, scale: 1.015 }} whileTap={{ scale: 0.98 }} onClick={onClick}
-      className="group relative w-full overflow-hidden rounded-3xl border border-white/70 bg-white/85 p-6 text-left shadow-lg backdrop-blur transition-shadow hover:shadow-2xl">
-      <div className={`absolute -right-12 -top-12 h-40 w-40 rounded-full opacity-20 blur-2xl transition-opacity group-hover:opacity-40 ${gradient}`} />
-      <div className="flex items-start gap-4">
-        <motion.div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-white shadow-md ${gradient}`}
-          animate={{ rotate: [0, -4, 4, 0] }} transition={{ duration: 4, repeat: Infinity, delay }}>
-          <Icon size={28} />
-        </motion.div>
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Option {n}</div>
-          <div className="mt-0.5 text-lg font-bold text-slate-900">{title}</div>
-          <p className="mt-1 text-sm text-slate-500">{desc}</p>
-          <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-500"><Mic size={12} />Say “{say}”</div>
+    <div className="grid items-center gap-6 md:grid-cols-[220px_1fr]">
+      <div className="hidden md:block">{children}</div>
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+        className="relative overflow-hidden rounded-3xl border border-white/70 bg-white/85 p-8 text-center shadow-lg backdrop-blur">
+        <div className="mx-auto mb-5 flex h-24 items-end justify-center gap-1.5" aria-hidden>
+          {[0, 1, 2, 3, 4, 5, 6].map(i => (
+            <motion.span key={i} className={`w-2.5 rounded-full ${mode === 'speaking' ? 'bg-violet-500' : 'bg-brand-500'}`}
+              animate={{ height: mode === 'listening' || mode === 'hearing' || mode === 'speaking' ? [14, 40 + (i % 3) * 22, 14] : 14 }}
+              transition={{ duration: mode === 'hearing' ? 0.5 : 1.1, repeat: Infinity, delay: i * 0.09, ease: 'easeInOut' }} />
+          ))}
         </div>
-        <ChevronRight className="mt-6 shrink-0 text-slate-300 transition group-hover:translate-x-1 group-hover:text-slate-500" />
-      </div>
-    </motion.button>
+        <p className="text-xl font-semibold leading-relaxed text-slate-900 sm:text-2xl">{question}</p>
+        <AnimatePresence>{heard && <motion.p key={heard} initial={{ opacity: 0 }} animate={{ opacity: 1 }} translate="no" className="mt-4 text-sm italic text-slate-400">“{heard}”</motion.p>}</AnimatePresence>
+        <div className="mt-5 inline-flex items-center gap-2 rounded-full bg-brand-50 px-4 py-1.5 text-sm font-medium text-brand-700"><Mic size={15} />{status}</div>
+      </motion.div>
+    </div>
   )
 }
 
@@ -91,7 +130,7 @@ const Panel = ({ children, k }: { children: React.ReactNode; k: string }) => (
   </motion.div>
 )
 
-export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
+export default function SimpleApp() {
   const [doctor, setDoctor] = useState<string | null>(auth.token ? 'doctor' : null)
   const [health, setHealth] = useState<Health | null>(null)
   const [step, setStep] = useState<Step>('home')
@@ -110,19 +149,44 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
   const [text, setText] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<CameraHandle>(null)
+  const cameraFor = useRef<'report' | 'image'>('report')
+  const [captured, setCaptured] = useState<Blob | null>(null)
+  const { speech, lang, t } = useLang()
+  /** Body-part name as it should appear inside a sentence. */
+  const partName = (p: string) => (lang === 'en' ? BODY_PART_LABELS[p].toLowerCase() : t(BODY_PART_LABELS[p]))
+  // translated copy of what is on screen, so "read aloud" speaks the chosen language (shares the cache with the cards)
+  const shown = result?.kind === 'report' ? (result.analysis?.interpretation ? { ...result.analysis.interpretation, evidence: undefined } : null)
+    : result && 'data' in result ? result.data : null
+  const tr = useTranslated<Record<string, unknown>>(shown as Record<string, unknown> | null)
 
-  const R = useRef({ result, confirm, upload, messages, step, camera, area })
-  R.current = { result, confirm, upload, messages, step, camera, area }
+  const R = useRef({ result, confirm, upload, messages, step, camera, area, tr: tr.data, lang, speech })
+  R.current = { result, confirm, upload, messages, step, camera, area, tr: tr.data, lang, speech }
 
-  const voice = useVoice({ onUtterance: (t, u) => onUtterance(t, u) })
-  const say = useCallback((t: string, speak = true) => {
-    if (!t) return
-    setCaption(t)
-    setMessages(m => [...m, { role: 'assistant', content: t }])
-    if (speak) void voice.speak(t)
+  const voice = useVoice({ onUtterance: (u, unc) => onUtterance(u, unc), language: lang === 'en' ? undefined : speech, sttLanguage: lang })
+  // Everything the assistant says goes through one ordered queue and is shown + spoken in the chosen language.
+  const sayQueue = useRef<Promise<void>>(Promise.resolve())
+  const say = useCallback((msg: string, speak = true) => {
+    if (!msg) return
+    const L = R.current.lang
+    sayQueue.current = sayQueue.current.then(async () => {
+      const out = isNative(msg, L) ? msg : await localize(msg, L)
+      setCaption(out)
+      setMessages(m => [...m, { role: 'assistant', content: out }])
+      if (speak) void voice.speak(out)
+    })
   }, [voice])
 
   useEffect(() => { auth.onUnauthorized(() => { setDoctor(null); voice.stop() }) }, [voice])
+  // switching language mid-conversation: show the assistant's last message in the new language too
+  const captionRef = useRef(caption)
+  captionRef.current = caption
+  useEffect(() => {
+    const c = captionRef.current
+    if (!c || isNative(c, lang) && lang !== 'en') return
+    let alive = true
+    void localize(c, lang).then(x => { if (alive && captionRef.current === c) setCaption(x) })
+    return () => { alive = false }
+  }, [lang])
   useEffect(() => {
     const ping = () => api.health().then(setHealth).catch(() => setHealth(null))
     ping()
@@ -139,20 +203,22 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
     setStep(s)
     if (s === 'home' || s === 'menu' || s === 'report') setResult(null)
     if (s === 'home') setArea(null)
-    if (speak && PROMPT[s]) say(`${prefix}${PROMPT[s]}`)
+    if (speak && PROMPT[s]) say(`${prefix}${t(PROMPT[s])}`)
   }
   const back = () => { setCamera(false); goStep(PARENT[R.current.step], false) }
 
   const begin = (part: string | null) => {
     setArea(part)
-    micOn()
-    goStep('menu', true, part ? `You picked the ${BODY_PART_LABELS[part].toLowerCase()}. ` : `${greeting()} `)
+    if (llm) { if (voice.paused) void voice.resume(); else micOn() }
+    setResult(null)
+    goStep('menu', true, part ? `${t('You picked the {part}.', { part: partName(part) })} ` : `${t(greeting())} `)
   }
 
-  const openCamera = (speak = true) => {
-    setStep('report')
+  const openCamera = (speak = true, purpose: 'report' | 'image' = R.current.step === 'image' ? 'image' : 'report') => {
+    cameraFor.current = purpose
+    if (purpose === 'report') setStep('report')
     setCamera(true)
-    if (speak) say('Hold the report flat in front of the camera, then say "capture" or tap Capture.')
+    if (speak) say(t(purpose === 'image' ? 'Point the camera at the affected area in good light, then say "capture" or tap Capture.' : 'Hold the report flat in front of the camera, then say "capture" or tap Capture.'))
   }
 
   // ---------------- report pipeline ----------------
@@ -180,8 +246,8 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
         say(`${it?.spoken_summary || it?.summary || 'The analysis is ready.'}${tip} Say "read the results" to hear the full advice.`)
       } catch (e) {
         setReport({ stage: 'done' })
-        const abn = a.structured.rows.filter(x => ['high', 'low'].includes(x.evaluation.status))
-        say(`I extracted ${a.structured.rows.length} values${abn.length ? `; ${abn.map(x => `${x.test_name} is ${x.evaluation.status}`).join(', ')}` : ''}. I couldn't add the AI explanation: ${(e as Error).message}`)
+        const abn = a.structured.rows.filter(x => ['high', 'low', 'abnormal'].includes(x.evaluation.status))
+        say(`I extracted ${a.structured.rows.length} values${abn.length ? `; ${abn.map(x => `${x.test_name} is ${x.evaluation.status}`).join(', ')}` : ''}. I couldn't add the explanation: ${(e as Error).message}`)
       }
     } catch (e) {
       setReport({ stage: 'done' })
@@ -190,6 +256,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
   }
 
   const uploadFile = async (file: File | Blob, name: string) => {
+    closeFileDialog()
     setStep('upload')
     const u = uploadDocument(file, name, 'report', null, pct => setUpload(x => x && { ...x, pct }))
     setUpload({ name, pct: 0, cancel: u.cancel })
@@ -200,11 +267,13 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
 
   const onCapture = (b: Blob) => {
     setCamera(false)
+    if (cameraFor.current === 'image') { setCaptured(b); say('Got the photo. Add any notes if you like, then tap Predict condition.', false); return }
     say('Captured. Let me read it.', false)
     void uploadFile(b, `camera_report_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`)
   }
 
   const openToken = async (f: FoundFile) => {
+    closeFileDialog()
     setBusyNote(`Opening ${f.name}…`)
     try { await processDoc(await api.openFound(f.token)) }
     catch (e) { say(`I couldn't open that file: ${(e as Error).message}`) }
@@ -212,6 +281,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
   }
 
   const findAndOpen = async (location?: string, query?: string) => {
+    closeFileDialog()
     setStep('upload')
     const q = (query || '').trim()
     setBusyNote(`Looking${q && !/^latest|newest|recent$/i.test(q) ? ` for “${q}”` : ' for the latest report'}${location ? ` in ${location}` : ''}…`)
@@ -229,21 +299,57 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
     }
   }
 
+  // The native "Open file" dialog (opened by voice) stays on screen until the user picks. If the file arrives
+  // another way (named by voice, dropped, camera), close the dialog automatically.
+  const dialogOpen = useRef(false)
+  const dialogClosedByApp = useRef(false)
+  const closeFileDialog = () => {
+    if (!dialogOpen.current) return
+    dialogClosedByApp.current = true
+    setBusyNote(null)
+    void api.cancelPick().catch(() => { /* dialog already gone */ })
+  }
+
   const openPicker = async (location?: string) => {
     setStep('upload')
     const clicked = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive
     if (clicked && fileInput.current) { fileInput.current.click(); return }
     if (!health?.local_file_dialog) { say('Click the upload box to choose the file.'); return }
-    setBusyNote('A file browser is open on your computer. Choose the report (check the taskbar if you don’t see it).')
+    setBusyNote('A file browser is open on your computer. Choose the report, or just tell me its name and I will open it for you.')
+    say('I opened the file browser. Pick the report, or just tell me its name, like "the CBC report in Downloads".')
+    dialogOpen.current = true
+    dialogClosedByApp.current = false
     try {
       const d = await api.pickLocal('report', null, location)
+      dialogOpen.current = false
+      if (dialogClosedByApp.current) return // the file was opened another way; stay quiet
       setBusyNote(null)
       if (d.cancelled) { say('No file chosen. Tell me whenever you’re ready.'); return }
       await processDoc(d)
     } catch (e) {
+      dialogOpen.current = false
+      if (dialogClosedByApp.current) return
       setBusyNote(null)
       say(e instanceof ApiError && (e.status === 403 || e.status === 501) ? 'I can’t open the file browser from here. Please use the upload box.' : `Upload failed: ${(e as Error).message}`)
     }
+  }
+
+  // ---------------- photo of disease / injury ----------------
+  const runImage = async (file: Blob, notes: string) => {
+    closeFileDialog()
+    setStep('image')
+    let small: Blob
+    try { small = await shrinkImage(file) } catch (e) { say((e as Error).message); return }
+    const preview = URL.createObjectURL(small)
+    setResult({ kind: 'image', preview, data: null })
+    say('Let me take a close look at the photo.', false)
+    try {
+      const r = await api.analyzePhoto(small, 'photo.jpg', R.current.area ? BODY_PART_LABELS[R.current.area] : null, notes)
+      setResult({ kind: 'image', preview, data: r })
+      setCaptured(null)
+      if (!r.is_medical_image) say(r.quality_issue || "That doesn't look like a photo of a health problem. Please try a clear close-up of the affected area.")
+      else say(`${r.spoken_summary || 'Here is what I see.'} Say "read the results" to hear the precautions.`)
+    } catch (e) { setResult(null); say(`Sorry, I couldn't analyze the photo: ${(e as Error).message}`) }
   }
 
   // ---------------- disease / symptoms ----------------
@@ -278,10 +384,22 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
 
   const readAloud = () => {
     const r = R.current.result
+    const local = R.current.lang !== 'en' && R.current.tr ? R.current.tr : null
+    if (local) {
+      // speak the translated card text in the selected language
+      const arr = (k: string) => (Array.isArray(local[k]) ? (local[k] as string[]).slice(0, 3).join('. ') : '')
+      const text = [local.spoken_summary || local.summary || local.overview, arr('precautions'), arr('home_care'), arr('avoid'), arr('see_doctor_if')]
+        .filter(Boolean).join('. ')
+      if (text) { say(String(text)); return }
+    }
     const list = (label: string, xs?: string[]) => (xs?.length ? ` ${label}: ${xs.slice(0, 3).join('. ')}.` : '')
+    if (r?.kind === 'image' && r.data) {
+      say((r.data.spoken_summary || '') + list('Precautions', r.data.precautions) + list('Home care', r.data.home_care) + list('See a doctor quickly if', r.data.see_doctor_if))
+      return
+    }
     if (r?.kind === 'report' && r.analysis) {
       const it = r.analysis.interpretation
-      const abn = r.analysis.structured.rows.filter(x => ['high', 'low'].includes(x.evaluation.status))
+      const abn = r.analysis.structured.rows.filter(x => ['high', 'low', 'abnormal'].includes(x.evaluation.status))
       say((it?.spoken_summary || `${r.analysis.structured.report_type}. ${abn.length ? abn.map(x => `${x.test_name} ${x.result} ${x.unit || ''}, ${x.evaluation.status}`).join('; ') : 'All values are within range.'}`)
         + list('Precautions', it?.precautions) + list('Things to avoid', it?.avoid) + list('See a doctor quickly if', it?.see_doctor_if))
     } else if (r?.kind === 'symptoms' && r.data) {
@@ -304,7 +422,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
     } catch (e) { say(`I couldn't create the PDF: ${(e as Error).message}`) } finally { setDownloading(false) }
   }
 
-  const askDownload = () => setConfirm({ title: 'Approve & download report', message: 'Do you approve this AI analysis and want to download it as a PDF?', run: approveAndDownload })
+  const askDownload = () => setConfirm({ title: 'Approve & download report', message: 'Do you approve this analysis and want to download it as a PDF?', run: approveAndDownload })
 
   const askFollowUp = (q: string) => { micOn(); say(q) }
 
@@ -315,7 +433,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
       case 'navigate_to': {
         const s = args.step
         if (s === 'camera') openCamera(false)
-        else if (s === 'home' || s === 'menu' || s === 'report' || s === 'upload' || s === 'disease') goStep(s, false)
+        else if (s === 'home' || s === 'menu' || s === 'report' || s === 'upload' || s === 'disease' || s === 'image') goStep(s, false)
         return
       }
       case 'ask_about_disease': void runDisease(args.disease); return
@@ -346,7 +464,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
       case 'show_original_document': say('Tap “Show original” on the report card to see the original document.', false); return
       case 'stop_speaking': voice.stopSpeaking(); return
       case 'repeat_last_answer': voice.repeat(); return
-      case 'cancel_current_operation': R.current.upload?.cancel(); setBusyNote(null); setCamera(false); say('Cancelled.', false); return
+      case 'cancel_current_operation': R.current.upload?.cancel(); closeFileDialog(); setBusyNote(null); setCamera(false); say('Cancelled.', false); return
       case 'go_back': back(); return
       default: say('That one lives in the advanced workspace. Tap “Advanced” at the top right.')
     }
@@ -355,16 +473,16 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
   const handleCommand = async (t: string) => {
     setHeard(t)
     setMessages(m => [...m, { role: 'user', content: t }])
-    if (/^(stop( speaking)?|be quiet|silence)\.?$/i.test(t)) { voice.stopSpeaking(); return }
+    if (isOnly(t, W.stop)) { voice.stopSpeaking(); return }
     setThinking(true)
     try {
       const r = R.current.result
       const ctx = {
-        view: 'guided', step: R.current.step, camera_open: R.current.camera, body_area: R.current.area,
+        view: 'guided', step: R.current.step, camera_open: R.current.camera, file_dialog_open: dialogOpen.current, body_area: R.current.area,
         document: r?.kind === 'report' ? r.doc.filename : null, has_analysis: !!currentAnalysis(),
         showing: r?.kind || 'nothing', file_choices: r?.kind === 'files' ? r.files.map(f => f.name) : undefined,
       }
-      const res = await api.command(t, R.current.messages.slice(-10), ctx)
+      const res = await api.command(t, R.current.messages.slice(-10), ctx, R.current.lang)
       const silent = res.actions.some(x => ['stop_speaking', 'repeat_last_answer', 'read_results_aloud', 'explain_medical_findings', 'retrieve_medical_evidence'].includes(x.name))
       if (res.reply) say(res.reply, !silent)
       res.actions.forEach(dispatch)
@@ -373,56 +491,62 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
 
   /** Quick local handling of short navigation phrases, so stepping through the flow by voice is instant. */
   const quickNav = (clean: string): boolean => {
-    const s = clean.toLowerCase()
-    if (s.split(/\s+/).length > 6) return false
+    const s = clean
+    if (norm(s).trim().split(' ').length > 6) return false
     const st = R.current.step
-    if (R.current.camera && /\b(capture|take|click|snap|shoot|scan it)\b/.test(s)) { cameraRef.current?.capture(); return true }
-    if (/^(go )?back$|^previous$/.test(s)) { back(); return true }
-    if (/\b(home|start over|main menu)\b/.test(s)) { goStep('home', false); say('Back to the start. Tap the body or say "I need help".', true); return true }
-    if (/^(read|read (it|the results|aloud)|read results)$/.test(s)) { readAloud(); return true }
-    if (st === 'home' && /\b(help|hello|hi|hey|start|begin)\b/.test(s)) { goStep('menu', true, `${greeting()} `); return true }
+    if (R.current.camera && hasAny(s, W.capture)) { cameraRef.current?.capture(); return true }
+    if (isOnly(s, W.back)) { back(); return true }
+    if (st !== 'image' && !R.current.camera && W.fileOnly.includes(withoutFiller(s))) {
+      if (dialogOpen.current) { say('The file browser is already open. Pick the report, or tell me its name.'); return true }
+      void openPicker(); return true
+    }
+    if (hasAny(s, W.home)) { goStep('home', false); say(t('Back to the start. Tap the body or say "I need help".')); return true }
+    if (isOnly(s, W.read)) { readAloud(); return true }
+    if (st === 'home' && hasAny(s, W.hello)) { goStep('menu', true, `${t(greeting())} `); return true }
+    if ((st === 'menu' || st === 'home') && (hasAny(s, W.three) || hasAny(s, W.photo))) { goStep('image'); return true }
+    if (st === 'image' && (hasAny(s, W.camera) || hasAny(s, W.capture))) { openCamera(true, 'image'); return true }
     if (st === 'menu') {
-      if (/\b(one|1|first|report|analy[sz]e)\b/.test(s)) { goStep('report'); return true }
-      if (/\b(two|2|second|disease|symptoms?|ask|recommend\w*|advice)\b/.test(s)) { goStep('disease'); return true }
+      if (hasAny(s, W.one) || hasAny(s, W.report)) { goStep('report'); return true }
+      if (hasAny(s, W.two) || hasAny(s, W.disease)) { goStep('disease'); return true }
     }
     if (st === 'report') {
-      if (/\b(camera|scan|photo|two|2|second|show)\b/.test(s)) { openCamera(); return true }
-      if (/\b(upload|file|browse|one|1|first)\b/.test(s)) { goStep('upload'); return true }
+      if (hasAny(s, W.camera) || hasAny(s, W.two)) { openCamera(); return true }
+      if (hasAny(s, W.upload) || hasAny(s, W.one)) { goStep('upload'); return true }
     }
     return false
   }
 
-  function onUtterance(t: string, uncertain: boolean) {
-    const clean = t.trim().replace(/[.!?]+$/, '')
+  function onUtterance(heardText: string, uncertain: boolean) {
+    const clean = heardText.trim().replace(/[.!?]+$/, '')
     const c = R.current.confirm
     if (c) {
-      setHeard(t)
-      if (YES.test(clean)) { setConfirm(null); c.run() } else if (NO.test(clean)) { setConfirm(null); say('Okay.') } else say('Please say yes or no.')
+      setHeard(heardText)
+      if (startsWithAny(clean, W.yes)) { setConfirm(null); c.run() } else if (startsWithAny(clean, W.no)) { setConfirm(null); say(t('Okay.')) } else say(t('Please say yes or no.'))
       return
     }
     const r = R.current.result
     if (r?.kind === 'files') {
-      const words = clean.toLowerCase().split(/\s+/)
+      const words = norm(clean).trim().split(' ')
       const n = words.map(w => ORDINALS[w]).find(Boolean) || (/\blast\b/.test(clean.toLowerCase()) ? r.files.length : 0)
       const byName = r.files.find(f => words.filter(w => w.length > 2).some(w => f.name.toLowerCase().includes(w)))
       const pick = n && n <= r.files.length ? r.files[n - 1] : !/\b(open|find|search|from|in)\b/i.test(clean) ? byName : undefined
-      if (pick) { setHeard(t); say(`Opening ${pick.name}.`, false); void openToken(pick); return }
-      if (NO.test(clean)) { setResult(null); say('Okay, never mind.'); return }
+      if (pick) { setHeard(heardText); say(`Opening ${pick.name}.`, false); void openToken(pick); return }
+      if (startsWithAny(clean, W.no)) { setResult(null); say('Okay, never mind.'); return }
     }
-    if (uncertain) { setHeard(t); say(`Sorry, I didn't quite catch that. Did you say “${t}”? Please say it again.`); return }
-    if (quickNav(clean)) { setHeard(t); setMessages(m => [...m, { role: 'user', content: t }]); return }
-    void handleCommand(t)
+    if (uncertain) { setHeard(heardText); say(`Sorry, I didn't quite catch that. Did you say “${heardText}”? Please say it again.`); return }
+    if (quickNav(clean)) { setHeard(heardText); setMessages(m => [...m, { role: 'user', content: heardText }]); return }
+    void handleCommand(heardText)
   }
 
   const onOrb = () => {
     if (voice.speaking) { voice.stopSpeaking(); return }
     if (voice.paused || voice.mic === 'off' || voice.mic === 'error') {
       void voice.resume()
-      if (R.current.step === 'home') goStep('menu', true, `${greeting()} `)
-      else say(PROMPT[R.current.step] || "I'm listening again. How can I help?")
+      if (R.current.step === 'home') goStep('menu', true, `${t(greeting())} `)
+      else say(PROMPT[R.current.step] ? t(PROMPT[R.current.step]) : "I'm listening again. How can I help?")
     } else {
       voice.pause()
-      setCaption('Paused. I won’t listen or speak until you tap the mic again.')
+      setCaption(t('Paused. I won’t listen or speak until you tap the mic again.'))
     }
   }
 
@@ -443,15 +567,15 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
             <HeartPulse size={20} />
           </motion.div>
           <div className="leading-tight">
-            <div className="whitespace-nowrap text-lg font-bold text-slate-900">MedLens AI</div>
-            <div className="hidden text-xs text-slate-500 sm:block">Your voice health assistant</div>
+            <div translate="no" className="whitespace-nowrap text-lg font-bold text-slate-900">MedLens</div>
+            <div className="hidden text-xs text-slate-500 sm:block">{t('Your voice health assistant')}</div>
           </div>
         </button>
         <span className="mr-auto" />
+        <LanguageSwitch />
         <span className={`chip ${llm ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${llm ? 'animate-pulse bg-emerald-500' : 'bg-rose-500'}`} /><span className="hidden sm:inline">{llm ? 'AI ready' : health ? 'AI key missing' : 'Server offline'}</span>
+          <span className={`h-1.5 w-1.5 rounded-full ${llm ? 'animate-pulse bg-emerald-500' : 'bg-rose-500'}`} /><span className="hidden sm:inline">{t(llm ? 'Ready' : health ? 'Assistant not set up' : 'Server offline')}</span>
         </span>
-        <button className="btn-ghost !py-1.5 !text-xs" onClick={onAdvanced} title="Full workspace"><LayoutGrid size={14} /><span className="hidden sm:inline">Advanced</span></button>
         <button className="btn-ghost !px-2 !py-1.5" title="Sign out" onClick={() => { auth.set(null); voice.stop(); setDoctor(null) }}><LogOut size={14} /></button>
       </header>
 
@@ -462,26 +586,26 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
             <VoiceOrb mode={mode} analyser={voice.analyserRef} disabled={!llm} onClick={onOrb} />
             <div className="mt-4 min-h-[96px] text-center">
               <AnimatePresence mode="wait">
-                {heard && <motion.p key={'h' + heard} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-2 text-sm italic text-slate-400">“{heard}”</motion.p>}
+                {heard && <motion.p key={'h' + heard} initial={{ opacity: 0 }} animate={{ opacity: 1 }} translate="no" className="mb-2 text-sm italic text-slate-400">“{heard}”</motion.p>}
               </AnimatePresence>
               <AnimatePresence mode="wait">
                 <motion.p key={caption || 'empty'} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                   className="text-[15px] leading-relaxed text-slate-700">
-                  {caption || (llm ? 'Tap the mic and just talk. I can guide you through every step by voice.' : 'Add GROQ_API_KEY to backend/.env to enable the assistant.')}
+                  {caption || (llm ? t('Tap the mic and just talk. I can guide you through every step by voice.') : 'Add GROQ_API_KEY to backend/.env to enable the assistant.')}
                 </motion.p>
               </AnimatePresence>
               {voice.error && <p className="mt-2 text-xs text-rose-600">{voice.error}</p>}
             </div>
             {llm && (
               <div className="mt-3">
-                <div className="mb-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">Try saying</div>
+                <div className="mb-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t('Try saying')}</div>
                 <div className="flex flex-wrap justify-center gap-1.5">
-                  {TRY[step].map(t => <button key={t} onClick={() => onUtterance(t, false)} className="rounded-full bg-brand-50 px-3 py-1 text-xs text-brand-700 transition hover:bg-brand-100">“{t}”</button>)}
+                  {TRY[step].map(p => <button key={p} onClick={() => onUtterance(t(p), false)} className="rounded-full bg-brand-50 px-3 py-1 text-xs text-brand-700 transition hover:bg-brand-100">“{t(p)}”</button>)}
                 </div>
               </div>
             )}
             <form className="mt-4 flex gap-2" onSubmit={e => { e.preventDefault(); if (text.trim()) { onUtterance(text.trim(), false); setText('') } }}>
-              <input className="input !rounded-full !px-4" placeholder="…or type here" value={text} onChange={e => setText(e.target.value)} disabled={!llm} />
+              <input className="input !rounded-full !px-4" placeholder={t('…or type here')} value={text} onChange={e => setText(e.target.value)} disabled={!llm} />
               <button className="btn-primary !rounded-full !px-3" disabled={!llm || !text.trim()} aria-label="Send"><Send size={16} /></button>
             </form>
           </div>
@@ -491,13 +615,13 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
         <section className="order-1 min-w-0 space-y-5 lg:order-none">
           {step !== 'home' && (
             <motion.nav initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-wrap items-center gap-2 text-sm">
-              <button className="btn-ghost !rounded-full !py-1.5" onClick={back}><ArrowLeft size={14} />Back</button>
+              <button className="btn-ghost !rounded-full !py-1.5" onClick={back}><ArrowLeft size={14} />{t('Back')}</button>
               <button className="flex items-center gap-1 text-slate-400 hover:text-slate-700" onClick={() => goStep('home', false)}><Home size={14} /></button>
-              {TRAIL[step].map((t, i) => (
-                <span key={t} className="flex items-center gap-2 text-slate-400"><ChevronRight size={14} />
-                  <span className={i === TRAIL[step].length - 1 ? 'font-semibold text-slate-700' : ''}>{t}</span></span>
+              {TRAIL[step].map((crumb, i) => (
+                <span key={crumb} className="flex items-center gap-2 text-slate-400"><ChevronRight size={14} />
+                  <span className={i === TRAIL[step].length - 1 ? 'font-semibold text-slate-700' : ''}>{t(crumb)}</span></span>
               ))}
-              {area && <span className="chip ml-auto bg-brand-100 text-brand-800">Area: {BODY_PART_LABELS[area]}
+              {area && <span className="chip ml-auto bg-brand-100 text-brand-800">{t('Area: {part}', { part: t(BODY_PART_LABELS[area]) })}
                 <button onClick={() => setArea(null)} aria-label="Clear area"><X size={12} /></button></span>}
             </motion.nav>
           )}
@@ -514,35 +638,26 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
               <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, scale: 0.97 }}
                 className="flex flex-col items-center rounded-3xl border border-white/60 bg-white/50 py-6 backdrop-blur" onClick={() => begin(null)}>
                 <motion.h1 initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="text-center text-2xl font-bold text-slate-900 sm:text-3xl">
-                  Hi, I'm <span className="bg-gradient-to-r from-brand-600 to-violet-600 bg-clip-text text-transparent">MedLens</span>
+                  {t("Hi, I'm")} <span className="bg-gradient-to-r from-brand-600 to-violet-600 bg-clip-text text-transparent" translate="no">MedLens</span>
                 </motion.h1>
-                <p className="mb-4 mt-1 text-center text-sm text-slate-500">Tap any part of the body to start, or just talk to me.</p>
+                <p className="mb-4 mt-1 text-center text-sm text-slate-500">{t('Tap any part of the body to start, or just talk to me.')}</p>
                 <BodyHero selected={area} onSelect={begin} />
               </motion.div>
             )}
 
             {step === 'menu' && (
-              <motion.div key="menu" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="grid items-center gap-6 md:grid-cols-[220px_1fr]">
-                <div className="hidden md:block"><BodyHero selected={area} onSelect={p => p && setArea(p)} compact /></div>
-                <div className="space-y-4">
-                  <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">How can I help you?</motion.h2>
-                  <ChoiceCard n={1} Icon={FileSearch} title="Analyze a medical report" gradient="bg-gradient-to-br from-brand-500 to-brand-700"
-                    desc="Upload a file or show it to the camera. I'll explain it simply, with precautions and what to avoid." say="analyze my report" onClick={() => goStep('report')} delay={0.05} />
-                  <ChoiceCard n={2} Icon={Stethoscope} title="Ask about a disease or get advice" gradient="bg-gradient-to-br from-violet-500 to-fuchsia-600"
-                    desc="Tell me your symptoms for possible conditions, or learn causes, prevention and precautions for any disease." say="ask about a disease" onClick={() => goStep('disease')} delay={0.15} />
-                </div>
+              <motion.div key="menu" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <VoiceStage mode={mode} heard={heard} question={t(PROMPT.menu)}>
+                  <BodyHero selected={area} onSelect={p => p && setArea(p)} compact />
+                </VoiceStage>
               </motion.div>
             )}
 
             {step === 'report' && (
-              <motion.div key="report" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-                <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">How would you like to share the report?</motion.h2>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <ChoiceCard n={1} Icon={UploadCloud} title="Upload a file" gradient="bg-gradient-to-br from-sky-500 to-brand-600"
-                    desc="PDF, photo, Word or text. Browse yourself, or tell me where it is." say="upload a file" onClick={() => goStep('upload')} delay={0.05} />
-                  <ChoiceCard n={2} Icon={Camera} title="Show it on camera" gradient="bg-gradient-to-br from-amber-500 to-rose-500"
-                    desc="Hold the paper report in front of your webcam or phone camera." say="use the camera" onClick={() => openCamera()} delay={0.15} />
-                </div>
+              <motion.div key="report" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <VoiceStage mode={mode} heard={heard} question={t(PROMPT.report)}>
+                  <BodyHero selected={area} onSelect={p => p && setArea(p)} compact />
+                </VoiceStage>
               </motion.div>
             )}
 
@@ -566,17 +681,17 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
                       ) : (
                         <>
                           <motion.div animate={{ y: [0, -6, 0] }} transition={{ duration: 2.4, repeat: Infinity }} className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-100 text-brand-600"><UploadCloud size={34} /></motion.div>
-                          <div className="text-lg font-semibold text-slate-800">Drop your medical report here</div>
-                          <div className="mt-1 text-sm text-slate-500">or click to browse · PDF, image, Word or text</div>
+                          <div className="text-lg font-semibold text-slate-800">{t('Drop your medical report here')}</div>
+                          <div className="mt-1 text-sm text-slate-500">{t('or click to browse · PDF, image, Word or text')}</div>
                         </>
                       )}
                     </motion.div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="flex items-center gap-3 rounded-2xl bg-white/80 p-4 text-sm text-slate-600 shadow-sm">
-                        <Mic className="shrink-0 text-brand-600" size={20} /><span>Or say <b>“open the CBC report from Downloads”</b> and I'll find it for you.</span>
+                        <Mic className="shrink-0 text-brand-600" size={20} /><span>{t("Or say “open the CBC report from Downloads” and I'll find it for you.")}</span>
                       </div>
                       <button onClick={() => openCamera()} className="flex items-center gap-3 rounded-2xl bg-white/80 p-4 text-left text-sm text-slate-600 shadow-sm transition hover:bg-white">
-                        <Camera className="shrink-0 text-amber-600" size={20} /><span>Paper report? <b>Use the camera</b> instead.</span>
+                        <Camera className="shrink-0 text-amber-600" size={20} /><span>{t('Paper report? Use the camera instead.')}</span>
                       </button>
                     </div>
                   </>
@@ -584,7 +699,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
                 {result?.kind === 'report' && (
                   <Panel k={'r' + result.doc.id}>
                     <ReportResult doc={result.doc} analysis={result.analysis} stage={result.stage} onReadAloud={readAloud} onDownload={askDownload} downloading={downloading} />
-                    {result.stage === 'done' && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />Analyze another report</button></div>}
+                    {result.stage === 'done' && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />{t('Analyze another report')}</button></div>}
                   </Panel>
                 )}
                 {result?.kind === 'files' && (
@@ -606,11 +721,28 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
               </motion.div>
             )}
 
+            {step === 'image' && (
+              <motion.div key="image" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
+                {result?.kind !== 'image' ? (
+                  <>
+                    <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">{t('Show me the problem')}</motion.h2>
+                    <ImageIntake area={area} busy={false} captured={captured} onClearCaptured={() => setCaptured(null)}
+                      onCamera={() => openCamera(true, 'image')} onAnalyze={(b, _n, notes) => void runImage(b, notes)} />
+                  </>
+                ) : (
+                  <>
+                    <Panel k={'img' + result.preview}><ImageDiagnosisView data={result.data} busy={!result.data} preview={result.preview} onReadAloud={readAloud} /></Panel>
+                    {result.data && <div className="flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />{t('Check another photo')}</button></div>}
+                  </>
+                )}
+              </motion.div>
+            )}
+
             {step === 'disease' && (
               <motion.div key="disease" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
                 {(!result || result.kind === 'report' || result.kind === 'files') ? (
                   <>
-                    <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">What's bothering you?</motion.h2>
+                    <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">{t("What's bothering you?")}</motion.h2>
                     <DiseaseIntake area={area} busy={resultBusy} onSymptoms={t => void runSymptoms(t)} onDisease={d => void runDisease(d)} />
                   </>
                 ) : (
@@ -627,7 +759,7 @@ export default function SimpleApp({ onAdvanced }: { onAdvanced: () => void }) {
                         </div>
                       </Panel>
                     )}
-                    {!resultBusy && <div className="flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />Ask something else</button></div>}
+                    {!resultBusy && <div className="flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />{t('Ask something else')}</button></div>}
                   </>
                 )}
               </motion.div>

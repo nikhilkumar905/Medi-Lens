@@ -174,3 +174,27 @@ export interface SymptomResult {
   limitations: string[]
   model: string
 }
+
+export interface ImageDiagnosis {
+  is_medical_image: boolean
+  image_quality: 'good' | 'fair' | 'poor'
+  quality_issue?: string | null
+  kind?: 'disease' | 'injury' | 'unclear'
+  observations: string[]
+  possible_conditions: { condition: string; likelihood: string; reasoning: string; evidence: string[] }[]
+  severity?: Severity
+  severity_reason?: string
+  symptoms: string[]
+  causes: string[]
+  precautions: string[]
+  home_care: string[]
+  avoid: string[]
+  prevention: string[]
+  see_doctor_if: string[]
+  recommended_tests: string[]
+  spoken_summary?: string
+  body_part?: string | null
+  limitations: string[]
+  model: string
+  generated_at?: string
+}

@@ -56,7 +56,7 @@ def route(modality: str, body_part: str | None = None) -> dict:
         "pipeline": "viewer-only" if modality in ("xray", "ct", "mri", "ultrasound", "photo") else None,
         "reason": reason,
         "candidate": cand,
-        "message": reason + " The image can be viewed and its metadata inspected, but no AI findings will be "
+        "message": reason + " The image can be viewed and its metadata inspected, but no automated findings will be "
                    "generated. Configure MONAI_MODEL_PATH / MEDGEMMA_MODEL_PATH on a suitable GPU server to enable it.",
     }
 

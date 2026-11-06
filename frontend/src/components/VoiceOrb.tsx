@@ -1,6 +1,7 @@
+import { useLang } from '../i18n'
 import { useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, MicOff, Loader2, Square } from 'lucide-react'
+import { Brain, Stethoscope, Square } from 'lucide-react'
 import type { MicState } from '../hooks/useVoice'
 
 export type OrbMode = 'off' | 'paused' | 'listening' | 'hearing' | 'thinking' | 'speaking' | 'error'
@@ -29,7 +30,9 @@ const LABEL: Record<OrbMode, string> = {
 
 /** Big animated speak button. Its glow follows the live microphone level. */
 export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
+  const { t } = useLang()
   const coreRef = useRef<HTMLDivElement>(null)
+  const iconRef = useRef<HTMLSpanElement>(null)
   useEffect(() => {
     let raf = 0
     const buf = new Uint8Array(256)
@@ -43,6 +46,7 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
         level = Math.min(1, peak / 60)
       }
       coreRef.current?.style.setProperty('--lvl', String(level))
+      iconRef.current?.style.setProperty('--lvl', String(level))
       raf = requestAnimationFrame(tick)
     }
     tick()
@@ -68,7 +72,7 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
             animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }} />
         )}
         <motion.button
-          onClick={onClick} disabled={disabled} aria-label={LABEL[mode]}
+          onClick={onClick} disabled={disabled} aria-label={t(LABEL[mode])}
           whileHover={{ scale: disabled ? 1 : 1.04 }} whileTap={{ scale: 0.95 }}
           animate={mode === 'off' ? { scale: [1, 1.035, 1] } : { scale: 1 }}
           transition={mode === 'off' ? { duration: 3, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.2 }}
@@ -84,30 +88,86 @@ export default function VoiceOrb({ mode, analyser, disabled, onClick }: Props) {
               boxShadow: '0 0 calc(20px + var(--lvl, 0) * 70px) calc(var(--lvl, 0) * 18px) rgba(63,176,187,.55)',
               transform: 'scale(calc(1 + var(--lvl, 0) * 0.08))',
             }} />
-          <span className="relative">
-            {mode === 'thinking' ? <Loader2 size={44} className="animate-spin" />
-              : mode === 'speaking' ? <SpeakingBars />
-                : mode === 'off' || mode === 'error' || mode === 'paused' ? (mode === 'off' ? <Mic size={46} /> : <MicOff size={44} />)
-                  : <Mic size={46} />}
+          <span ref={iconRef} className="relative flex items-center justify-center">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span key={iconKey(mode)} className="flex items-center justify-center"
+                initial={{ opacity: 0, scale: 0.6, rotate: -20 }} animate={{ opacity: 1, scale: 1, rotate: 0 }} exit={{ opacity: 0, scale: 0.6, rotate: 20 }}
+                transition={{ duration: 0.22 }}>
+                <StateIcon mode={mode} />
+              </motion.span>
+            </AnimatePresence>
           </span>
         </motion.button>
       </div>
       <motion.div key={mode} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
         className={`flex items-center gap-1.5 text-sm font-medium ${mode === 'error' ? 'text-rose-600' : mode === 'paused' ? 'rounded-full bg-slate-200 px-3 py-1 text-slate-700' : 'text-slate-600'}`}>
         {mode === 'speaking' && <Square size={12} className="fill-current" />}
-        {LABEL[mode]}
+        {t(LABEL[mode])}
       </motion.div>
     </div>
   )
 }
 
-function SpeakingBars() {
+const iconKey = (m: OrbMode) => (m === 'speaking' ? 'ecg' : m === 'thinking' ? 'brain' : m === 'paused' || m === 'error' ? 'muted' : 'steth')
+
+/** Medical icon set for the voice orb: stethoscope = listening, ECG heartbeat = speaking, crossed stethoscope = muted. */
+function StateIcon({ mode }: { mode: OrbMode }) {
+  if (mode === 'speaking') return <EcgIcon />
+  if (mode === 'thinking') return (
+    <motion.span animate={{ scale: [1, 1.1, 1], opacity: [0.85, 1, 0.85] }} transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }}>
+      <Brain size={58} strokeWidth={1.6} />
+    </motion.span>
+  )
+  if (mode === 'paused' || mode === 'error') return <MutedStethoscope />
+  return <ListeningStethoscope active={mode === 'listening' || mode === 'hearing'} hearing={mode === 'hearing'} />
+}
+
+/** Stethoscope that "breathes" while waiting and bounces with the user's voice (--lvl is the live mic level). */
+function ListeningStethoscope({ active, hearing }: { active: boolean; hearing: boolean }) {
   return (
-    <span className="flex h-12 items-center gap-1.5">
-      {[0, 1, 2, 3, 4].map(i => (
-        <motion.span key={i} className="w-2 rounded-full bg-white"
-          animate={{ height: [10, 38, 16, 30, 10] }} transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.12, ease: 'easeInOut' }} />
+    <span className="relative flex h-20 w-20 items-center justify-center">
+      {active && [0, 1].map(i => (
+        <motion.span key={i} className="absolute bottom-1 right-0 h-6 w-6 rounded-full border-2 border-white/70"
+          initial={{ scale: 0.4, opacity: 0.9 }} animate={{ scale: hearing ? 2.1 : 1.6, opacity: 0 }}
+          transition={{ duration: hearing ? 0.8 : 1.8, repeat: Infinity, delay: i * (hearing ? 0.4 : 0.9), ease: 'easeOut' }} />
       ))}
+      {/* outer span follows the live voice level; inner span carries the idle animation (framer owns its transform) */}
+      <span style={{ display: 'flex', transform: 'scale(calc(1 + var(--lvl, 0) * 0.28))', transition: 'transform 80ms linear' }}>
+        <motion.span style={{ display: 'flex' }}
+          animate={active ? { rotate: [0, -4, 4, 0] } : { scale: [1, 1.05, 1] }}
+          transition={{ duration: active ? (hearing ? 0.6 : 2.4) : 3, repeat: Infinity, ease: 'easeInOut' }}>
+          <Stethoscope size={62} strokeWidth={1.7} />
+        </motion.span>
+      </span>
     </span>
+  )
+}
+
+/** Stethoscope with a slash: the assistant is muted / not listening. */
+function MutedStethoscope() {
+  return (
+    <span className="relative flex h-20 w-20 items-center justify-center opacity-85">
+      <Stethoscope size={60} strokeWidth={1.6} />
+      <svg viewBox="0 0 64 64" className="absolute inset-0 h-20 w-20" fill="none" aria-hidden>
+        <motion.line x1="10" y1="10" x2="54" y2="54" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round"
+          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 0.35, ease: 'easeOut' }} />
+      </svg>
+    </span>
+  )
+}
+
+/** ECG heartbeat trace that draws itself across the orb while the assistant speaks. */
+function EcgIcon() {
+  const d = 'M2 34 H16 L20 28 L24 34 H28 L32 12 L37 52 L42 22 L45 34 H52 L55 30 L58 34 H70'
+  return (
+    <svg viewBox="0 0 72 64" className="h-20 w-[92px]" fill="none" aria-hidden>
+      <path d={d} stroke="white" strokeOpacity="0.25" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      <motion.path d={d} stroke="white" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"
+        initial={{ pathLength: 0, pathOffset: 0 }} animate={{ pathLength: [0, 0.45, 0.45, 0], pathOffset: [0, 0.2, 0.55, 1] }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: 'linear', times: [0, 0.3, 0.7, 1] }} />
+      <motion.circle r="3.2" fill="white" style={{ filter: 'drop-shadow(0 0 4px #fff)' }}
+        animate={{ cx: [2, 16, 20, 24, 28, 32, 37, 42, 45, 52, 55, 58, 70], cy: [34, 34, 28, 34, 34, 12, 52, 22, 34, 34, 30, 34, 34] }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }} />
+    </svg>
   )
 }

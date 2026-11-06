@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Hand } from 'lucide-react'
 import { BODY_PART_LABELS, FRONT, ORGAN_COLOR, type Shape } from './AnatomyViewer'
+import { useLang } from '../i18n'
 
 interface Props {
   selected: string | null
@@ -12,6 +13,7 @@ interface Props {
 /** Large animated anatomy figure for the home screen: scan line, beating heart, glowing hover. */
 export default function BodyHero({ selected, onSelect, compact }: Props) {
   const [hover, setHover] = useState<string | null>(null)
+  const { t } = useLang()
   const label = hover || selected
 
   const render = (s: Shape, i: number) => {
@@ -30,7 +32,7 @@ export default function BodyHero({ selected, onSelect, compact }: Props) {
       onMouseEnter: () => setHover(isSkin ? null : s.id),
       onMouseLeave: () => setHover(null),
       role: 'button',
-      'aria-label': BODY_PART_LABELS[s.id],
+      'aria-label': t(BODY_PART_LABELS[s.id]),
     }
     const key = `${s.id}-${i}`
     if (s.id === 'heart') {
@@ -83,7 +85,7 @@ export default function BodyHero({ selected, onSelect, compact }: Props) {
           {label && (
             <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 whitespace-nowrap rounded-full bg-slate-900/85 px-3 py-1 text-xs font-medium text-white shadow">
-              {BODY_PART_LABELS[label]}
+              {t(BODY_PART_LABELS[label])}
             </motion.div>
           )}
         </AnimatePresence>
@@ -91,7 +93,7 @@ export default function BodyHero({ selected, onSelect, compact }: Props) {
       {!compact && (
         <motion.div className="mt-2 flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 text-sm text-slate-600 shadow-sm backdrop-blur"
           animate={{ y: [0, -3, 0] }} transition={{ duration: 2.2, repeat: Infinity }}>
-          <Hand size={16} className="text-brand-600" /> Tap the body or say “Hey, I need help” to begin
+          <Hand size={16} className="text-brand-600" /> {t('Tap the body or say “Hey, I need help” to begin')}
         </motion.div>
       )}
     </div>

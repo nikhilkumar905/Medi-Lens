@@ -30,7 +30,7 @@ export default function ExtractionViewer({ doc, highlight, onHighlight }: Props)
   const box = highlight && highlight.page === page ? highlight.bbox : null
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-2">
+    <div data-no-translate className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-2">
       <section className="flex min-h-0 flex-col rounded-xl border border-slate-200">
         <header className="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
           <span>Original document</span>

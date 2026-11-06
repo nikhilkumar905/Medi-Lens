@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     groq_stt_model: str = "whisper-large-v3-turbo"
     groq_tts_model: str = "canopylabs/orpheus-v1-english"
     groq_tts_voice: str = "hannah"
+    # multimodal model for photo-based triage (skin conditions, wounds, injuries)
+    groq_vision_model: str = "qwen/qwen3.8-27b"
 
     # --- Storage / DB ---
     database_url: str = f"sqlite:///{(BASE_DIR.parent / 'storage' / 'medlens.db').as_posix()}"

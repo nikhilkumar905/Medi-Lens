@@ -20,12 +20,13 @@ def _fn(name: str, desc: str, props: dict | None = None, required: list | None =
             "parameters": {"type": "object", "properties": props or {}, "required": required or []}}}
 
 
-STEPS = ["home", "menu", "report", "upload", "camera", "disease"]
+STEPS = ["home", "menu", "report", "upload", "camera", "disease", "image"]
 
 TOOLS = [
-    _fn("navigate_to", "Move the guided screen to a step: home (body figure), menu ('How can I help?' with the two "
+    _fn("navigate_to", "Move the guided screen to a step: home (body figure), menu ('How can I help?' with the three "
         "options), report (choose upload vs camera), upload (upload / find a file), camera (scan the report with the "
-        "camera), disease (ask about a disease or symptoms).",
+        "camera), disease (ask about a disease or symptoms), image (upload or photograph a skin disease, rash, wound or "
+        "injury to predict the condition).",
         {"step": {"type": "string", "enum": STEPS}}, ["step"]),
     _fn("ask_about_disease", "Explain a named disease or condition: overview, symptoms, causes, prevention, "
         "precautions, what to avoid. Use when they ask about a disease by name, e.g. 'tell me about diabetes', "
@@ -66,17 +67,19 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
-SYSTEM = """You are MedLens, a friendly AI health assistant chatting by voice with the user (often a doctor) in a guided web app.
+SYSTEM = """You are MedLens, a friendly health assistant chatting by voice with the user (often a doctor) in a guided web app.
 Talk like a warm, sharp colleague: casual, natural, short (1-3 sentences), contractions welcome, no lists, no
 markdown, no robotic phrases like "How may I assist you". Respond to what they actually said, and keep the
 conversation going with a natural follow-up when useful.
 
-The screen is a guided flow: home (human body figure) -> menu "How can I help you?" with two options:
-(1) analyze a medical report, (2) ask about a disease / symptoms / get recommendations. Option 1 then offers
+The screen is a guided flow: home (human body figure) -> menu "How can I help you?" with three options:
+(1) analyze a medical report, (2) ask about a disease / symptoms / get recommendations, (3) upload or photograph
+a skin disease, rash, wound, burn or injury so the app predicts the condition. Option 1 then offers
 (a) upload a file or (b) show the report to the camera. Use navigate_to to move between these steps when they pick
 an option ("the first one", "analyze my report", "upload", "use the camera", "ask about a disease", "go home").
 If they pick option 2 without naming a disease or symptoms, call navigate_to with step "disease" AND ask what's
-bothering them. If they pick option 1 without naming a file, call navigate_to with step "report".
+bothering them. If they pick option 1 without naming a file, call navigate_to with step "report". If they pick
+option 3 or want a photo of a skin problem, wound or injury checked, call navigate_to with step "image".
 
 Understand the intent behind their words:
 - They name a disease and want to know about it, how to prevent it, precautions or what to avoid
@@ -92,8 +95,11 @@ Understand the intent behind their words:
 - They want a report analyzed but name no file or folder and no document is loaded -> do NOT call a function;
   reply casually, e.g. "Sure! Which file — tell me the name or folder, like 'the CBC report in Downloads'. Or say
   'upload file' to browse."
-- They say only "upload file", "browse", "open the file browser" with no folder/file name
-  -> call open_report_upload (opens a file browser; the report is analyzed automatically).
+- They say only "upload file", "browse", "open the file browser" with no folder/file name — or even a single word
+  such as "file", "upload", "document", "फ़ाइल", "ఫైల్" — -> call open_report_upload (opens a file browser; the
+  report is analyzed automatically).
+- The file browser is open (state file_dialog_open) and they name a file or folder -> call open_file_from_computer;
+  the app opens that file and closes the file browser by itself.
 - The screen is showing a list of file choices (state file_choices) and they pick one by name -> call
   open_file_from_computer with that name as file_query and the same folder.
 - A document IS loaded and they ask to analyze it -> call analyze_medical_document.
@@ -127,12 +133,29 @@ def validate_call(name: str, args: dict) -> tuple[bool, dict | str]:
     return True, clean
 
 
-def interpret_command(text: str, history: list[dict], context: dict) -> dict:
-    messages = [{"role": "system", "content": SYSTEM.format(context=json.dumps(context)[:1500])}]
+LANGUAGE_RULE = {
+    "hi": "Hindi in Devanagari script (simple everyday Hindi; common English medical words like report, CBC, X-ray are fine)",
+    "te": "Telugu in Telugu script (simple everyday Telugu; common English medical words like report, CBC, X-ray are fine)",
+}
+
+
+def interpret_command(text: str, history: list[dict], context: dict, language: str = "en") -> dict:
+    system = SYSTEM.format(context=json.dumps(context, ensure_ascii=False)[:1500])
+    if language in LANGUAGE_RULE:
+        system += (f"\n\nLANGUAGE: The user speaks {LANGUAGE_RULE[language]}; they may also mix in English or write "
+                   f"it in Latin letters. ALWAYS write your reply in {LANGUAGE_RULE[language]}. Function-call "
+                   "arguments must be in ENGLISH (translate disease names, symptoms and file words to English), "
+                   "e.g. 'मुझे तीन दिन से बुखार है' -> analyze_symptoms(symptoms='fever for 3 days').")
+    messages = [{"role": "system", "content": system}]
     for h in history[-8:]:
         if h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str):
             messages.append({"role": h["role"], "content": h["content"][:1000]})
     messages.append({"role": "user", "content": text})
+    if language in LANGUAGE_RULE:
+        # a reminder right before the answer is far more reliable than one buried in the long system prompt
+        messages.append({"role": "system", "content": f"Write your spoken reply in {LANGUAGE_RULE[language]} only, "
+                                                      "even if the user wrote in English or Latin letters. Keep "
+                                                      "function arguments in English."})
     msg, model = llm.chat(messages, tools=TOOLS, temperature=0.5, max_tokens=400)
     actions, errors = [], []
     for tc in msg.tool_calls or []:
@@ -148,7 +171,7 @@ def interpret_command(text: str, history: list[dict], context: dict) -> dict:
             errors.append(res)
     reply = (msg.content or "").strip()
     if not reply and actions:
-        reply = _ack(actions[0])
+        reply = _ack(actions[0])  # English; the app shows/speaks it in the user's language
     if errors and not actions:
         reply = f"Sorry, I couldn't do that: {errors[0]}. Could you rephrase?"
     return {"reply": reply, "actions": actions, "errors": errors, "model": model}
@@ -161,6 +184,7 @@ def _ack(a: dict) -> str:
                         "upload": "Drop the file in, or tell me where it is, like the CBC report in Downloads.",
                         "camera": "Opening the camera. Hold the report steady and say capture.",
                         "disease": "Sure. Tell me your symptoms, or name a disease you'd like to know about.",
+                        "image": "Sure. Upload or take a close-up photo of the problem area.",
                         "home": "Back to the start."}.get(args.get("step", ""), "Okay."),
         "ask_about_disease": f"Let me pull up what you should know about {args.get('disease', 'that')}.",
         "open_report_upload": "Opening your file browser — pick the report and I'll take it from there.",

@@ -65,8 +65,34 @@ def parse_range(s: str) -> dict | None:
     return {"low": val, "high": None, "unit": unit, "inclusive": cmp not in (">",)}
 
 
-def evaluate(result: str, reference: str | None) -> dict:
-    """Compare a result string against the report's own reference interval."""
+LEAD_RE = re.compile(rf"^(?P<cmp>[<>≤≥]=?)?\s*(?P<num>{NUM})\s*(?P<rest>[%A-Za-zµμ/(].*)$")
+_HIGH_FLAGS = {"h", "hh", "high", "critical high", "abnormal high", "↑"}
+_LOW_FLAGS = {"l", "ll", "low", "critical low", "abnormal low", "↓"}
+
+
+def _unit_key(u: str | None) -> str:
+    return re.sub(r"\s+", "", (u or "").lower()).replace("μ", "µ")
+
+
+def evaluate(result: str, reference: str | None, flag: str | None = None) -> dict:
+    """Compare a result against the report's own reference interval; if that is impossible, fall back to the
+    High/Low flag printed on the report. Never invents a range."""
+    ev = _compare(result, reference)
+    if ev["status"] in ("high", "low", "normal"):
+        return ev
+    f = (flag or "").strip().lower()
+    if f in _HIGH_FLAGS:
+        return {"status": "high", "note": "Marked high on the report"}
+    if f in _LOW_FLAGS:
+        return {"status": "low", "note": "Marked low on the report"}
+    if f == "normal":
+        return {"status": "normal", "note": "Marked normal on the report"}
+    if f in ("abnormal", "*", "critical"):
+        return {"status": "abnormal", "note": "Marked abnormal on the report"}
+    return ev
+
+
+def _compare(result: str, reference: str | None) -> dict:
     if not reference:
         return {"status": "no_reference", "note": "No reference interval supplied in report"}
     rng = parse_range(reference)
@@ -74,7 +100,15 @@ def evaluate(result: str, reference: str | None) -> dict:
     if not rng:
         return {"status": "unparsed_reference", "note": "Reference interval could not be interpreted"}
     if not rm:
-        return {"status": "non_numeric", "note": "Result is not a single numeric value"}
+        # e.g. "8.6% (70 mmol/mol)" or "84 µmol/L": use the leading value when its unit matches the range's unit
+        lm = LEAD_RE.match((result or "").strip())
+        if not lm:
+            return {"status": "non_numeric", "note": "Result is not a single numeric value"}
+        res_unit = re.match(r"[^\s(]+", lm.group("rest").strip())
+        res_unit = res_unit.group(0) if res_unit else ""
+        if rng.get("unit") and _unit_key(res_unit) != _unit_key(rng["unit"].split()[0]):
+            return {"status": "indeterminate", "note": f"Result unit ({res_unit}) differs from reference unit ({rng['unit']})"}
+        rm = lm
     if rm.group("cmp"):
         return {"status": "indeterminate", "note": "Result reported with a comparison symbol"}
     v = _to_float(rm.group("num"))
@@ -130,7 +164,7 @@ def parse_lab_rows(pages: list[dict]) -> list[dict]:
                     unit = c
             if result is None:
                 continue
-            ev = evaluate(result, ref)
+            ev = evaluate(result, ref, flag)
             low_conf = line.get("low_confidence", False)
             rows.append({
                 "test_name": cells[0],

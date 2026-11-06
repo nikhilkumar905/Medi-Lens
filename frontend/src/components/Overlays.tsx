@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { motion } from 'framer-motion'
 import { Camera, X, Stethoscope, Loader2 } from 'lucide-react'
 import { api, auth } from '../services/api'
+import { LanguageSwitch, useLang } from '../i18n'
 
 export function Modal({ children, onClose, wide }: { children: React.ReactNode; onClose?: () => void; wide?: boolean }) {
   return (
@@ -15,14 +16,15 @@ export function Modal({ children, onClose, wide }: { children: React.ReactNode; 
 }
 
 export function ConfirmDialog({ title, message, onConfirm, onCancel }: { title: string; message: string; onConfirm: () => void; onCancel: () => void }) {
+  const { t } = useLang()
   return (
     <Modal onClose={onCancel}>
-      <h3 className="text-base font-semibold">{title}</h3>
-      <p className="mt-2 text-sm text-slate-600">{message}</p>
-      <p className="mt-1 text-xs text-slate-400">You can also say “yes” or “no”.</p>
+      <h3 className="text-base font-semibold">{t(title)}</h3>
+      <p className="mt-2 text-sm text-slate-600">{t(message)}</p>
+      <p className="mt-1 text-xs text-slate-400">{t('You can also say “yes” or “no”.')}</p>
       <div className="mt-4 flex justify-end gap-2">
-        <button className="btn-ghost" onClick={onCancel}>Cancel</button>
-        <button className="btn-primary" onClick={onConfirm} autoFocus>Confirm</button>
+        <button className="btn-ghost" onClick={onCancel}>{t('Cancel')}</button>
+        <button className="btn-primary" onClick={onConfirm} autoFocus>{t('Confirm')}</button>
       </div>
     </Modal>
   )
@@ -53,17 +55,18 @@ export const CameraCapture = forwardRef<CameraHandle, { onCapture: (b: Blob) => 
       c.toBlob(b => b && onCapture(b), 'image/jpeg', 0.95)
     }
     useImperativeHandle(ref, () => ({ capture }))
+    const { t } = useLang()
     return (
       <Modal onClose={onClose} wide>
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-semibold">Scan with camera</h3>
+          <h3 className="font-semibold">{t('Camera')}</h3>
           <button className="btn-ghost !p-1.5" onClick={onClose}><X size={16} /></button>
         </div>
         {err ? <div className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{err}</div> :
           <video ref={video} autoPlay playsInline muted className="aspect-video w-full rounded-xl bg-black object-contain" />}
         <div className="mt-3 flex items-center justify-between">
-          <p className="text-xs text-slate-500">Hold the document flat and well lit. Say “capture the image”.</p>
-          <button className="btn-primary" onClick={capture} disabled={!!err}><Camera size={16} /> Capture</button>
+          <p className="text-xs text-slate-500">{t('Keep it steady and well lit. Say “capture” when ready.')}</p>
+          <button className="btn-primary" onClick={capture} disabled={!!err}><Camera size={16} /> {t('Capture')}</button>
         </div>
       </Modal>
     )
@@ -74,8 +77,9 @@ export function Login({ onLogin }: { onLogin: (doctor: string) => void }) {
   const [p, setP] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const { t } = useLang()
   return (
-    <div className="flex min-h-full items-center justify-center bg-gradient-to-br from-brand-900 via-brand-700 to-brand-500 p-4">
+    <div className="relative flex min-h-full items-center justify-center bg-gradient-to-br from-brand-900 via-brand-700 to-brand-500 p-4">
       <motion.form initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="card w-full max-w-sm p-7"
         onSubmit={async e => {
           e.preventDefault(); setBusy(true); setErr(null)
@@ -83,15 +87,16 @@ export function Login({ onLogin }: { onLogin: (doctor: string) => void }) {
         }}>
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white"><Stethoscope /></div>
-          <div><h1 className="text-xl font-bold text-slate-900">MedLens AI</h1><p className="text-xs text-slate-500">Voice-first medical assistant</p></div>
+          <div><h1 translate="no" className="text-xl font-bold text-slate-900">MedLens</h1><p className="text-xs text-slate-500">{t('Voice-first medical assistant')}</p></div>
         </div>
-        <label className="text-xs font-medium text-slate-600">Username</label>
+        <div className="mb-4 flex justify-center"><LanguageSwitch /></div>
+        <label className="text-xs font-medium text-slate-600">{t('Username')}</label>
         <input className="input mb-3 mt-1" value={u} onChange={e => setU(e.target.value)} autoComplete="username" />
-        <label className="text-xs font-medium text-slate-600">Password</label>
+        <label className="text-xs font-medium text-slate-600">{t('Password')}</label>
         <input className="input mt-1" type="password" value={p} onChange={e => setP(e.target.value)} autoComplete="current-password" autoFocus />
         {err && <p className="mt-3 text-sm text-rose-600">{err}</p>}
-        <button className="btn-primary mt-5 w-full" disabled={busy}>{busy && <Loader2 size={16} className="animate-spin" />} Sign in</button>
-        <p className="mt-4 text-[11px] leading-relaxed text-slate-400">Decision-support tool. Not a certified medical device. Use synthetic data unless your hospital has approved this environment.</p>
+        <button className="btn-primary mt-5 w-full" disabled={busy}>{busy && <Loader2 size={16} className="animate-spin" />} {t('Sign in')}</button>
+        <p className="mt-4 text-[11px] leading-relaxed text-slate-400">{t('Decision-support tool. Not a certified medical device. Use synthetic data unless your hospital has approved this environment.')}</p>
       </motion.form>
     </div>
   )

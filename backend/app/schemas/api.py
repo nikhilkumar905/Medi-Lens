@@ -39,6 +39,7 @@ class CommandIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     history: list[dict] = []
     context: dict = {}
+    language: str = Field(default="en", pattern="^(en|hi|te)$")
 
 
 class AskIn(BaseModel):
@@ -61,3 +62,8 @@ class SymptomsIn(BaseModel):
 
 class DiseaseIn(BaseModel):
     disease: str = Field(min_length=2, max_length=200)
+
+
+class TranslateIn(BaseModel):
+    language: str = Field(pattern="^(hi|te)$")
+    data: dict | list

@@ -26,6 +26,7 @@ def chat(messages: list[dict], model: str | None = None, temperature: float = 0.
          max_tokens: int = 1500, json_mode: bool = False, tools: list | None = None,
          tool_choice: str | None = None, reasoning_effort: str | None = "low"):
     s = get_settings()
+    messages = _with_wording_rule(messages)
     kwargs = dict(model=model or s.groq_text_model, messages=messages,
                   temperature=temperature, max_tokens=max_tokens)
     # gpt-oss models reason before answering; keep it short so the budget goes to the answer
@@ -41,20 +42,60 @@ def chat(messages: list[dict], model: str | None = None, temperature: float = 0.
     except LLMNotConfigured:
         raise
     except Exception as e:  # network / API errors are surfaced, never hidden
+        # The big model has its own daily token quota; when it is used up, fall back to the fast model once.
+        fallback = s.groq_fast_model
+        if _is_rate_limit(e) and fallback and kwargs["model"] == s.groq_text_model and fallback != kwargs["model"]:
+            kwargs["model"] = fallback
+            try:
+                resp = _client().chat.completions.create(**kwargs)
+                return resp.choices[0].message, kwargs["model"]
+            except Exception as e2:
+                raise LLMError(f"Groq request failed: {e2}") from e2
         raise LLMError(f"Groq request failed: {e}") from e
     return resp.choices[0].message, kwargs["model"]
 
 
+WORDING_RULE = ("Wording rule: never describe yourself, this app or the output as \"AI\", \"artificial intelligence\", "
+                "a \"model\", \"language model\" or \"chatbot\" in any language. Refer to yourself as MedLens or "
+                "\"the assistant\" and to the output as an analysis, prediction or interpretation. If the user sincerely "
+                "asks whether you are a human or what you are, answer honestly that you are an automated software "
+                "assistant, not a human, and never deny being automated.")
+
+
+def _with_wording_rule(messages: list[dict]) -> list[dict]:
+    """Append the product wording rule to the first system message (or add one)."""
+    out = list(messages)
+    if out and out[0].get("role") == "system" and isinstance(out[0].get("content"), str):
+        out[0] = {**out[0], "content": out[0]["content"] + "\n\n" + WORDING_RULE}
+    else:
+        out.insert(0, {"role": "system", "content": WORDING_RULE})
+    return out
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    return getattr(e, "status_code", None) == 429 or "rate_limit" in str(e) or "Error code: 429" in str(e)
+
+
 def chat_json(messages: list[dict], **kw) -> tuple[dict, str]:
     msg, model = chat(messages, json_mode=True, **kw)
-    content = msg.content or "{}"
+    return parse_json(msg.content or "{}"), model
+
+
+def parse_json(content: str) -> dict:
+    """Parse a model reply as a JSON object, tolerating code fences or text around it."""
     try:
-        return json.loads(content), model
+        out = json.loads(content)
+        if isinstance(out, dict):
+            return out
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", content, re.S)
-        if m:
-            return json.loads(m.group(0)), model
-        raise LLMError("Model did not return valid JSON")
+        pass
+    m = re.search(r"\{.*\}", content, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise LLMError("Model did not return valid JSON")
 
 
 def transcribe(audio: bytes, filename: str, language: str | None = None) -> dict:

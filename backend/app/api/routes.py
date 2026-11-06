@@ -1,4 +1,6 @@
-"""HTTP API for MedLens AI."""
+"""HTTP API for MedLens."""
+import json
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -9,7 +11,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import create_token, require_doctor, verify_credentials
 from app.models.entities import Analysis, AuditEvent, Document, Patient, Report
-from app.schemas.api import (AnalysisUpdate, AskIn, CommandIn, InterpretIn, LoginIn, PatientIn, RouteIn, SymptomsIn, DiseaseIn)
+from app.schemas.api import (AnalysisUpdate, AskIn, CommandIn, InterpretIn, LoginIn, PatientIn, RouteIn, SymptomsIn, DiseaseIn, TranslateIn)
 from app.services.dicom import dicom_service
 from app.services.documents import analysis as analysis_svc
 from app.services.documents import extractor, file_finder, local_picker, storage
@@ -21,6 +23,8 @@ from app.services.rag.retriever import bm25_search, index_document
 from app.services.reports.pdf_report import build_pdf
 from app.services.router import model_router
 from app.services.voice import assistant
+from app.services import translate as translate_svc
+from app.services.vision import image_diagnosis
 
 public = APIRouter(prefix="/api")
 api = APIRouter(prefix="/api", dependencies=[Depends(require_doctor)])
@@ -189,6 +193,13 @@ def pick_local(body: PickIn, request: Request, db: Session = Depends(get_db), do
     return _ingest(db, doctor, path.name[:200], path.read_bytes(), body.category, body.patient_id, False)
 
 
+@api.post("/documents/pick-local/cancel")
+def pick_local_cancel(request: Request):
+    """Close the native file dialog if one is open (the file was chosen another way, e.g. by voice)."""
+    _local_only(request)
+    return {"closed": local_picker.cancel_pick()}
+
+
 def _ingest(db: Session, doctor: str, name: str, data: bytes, category: str, patient_id: int | None, force_ocr: bool):
     try:
         kind, mime = storage.detect_kind(name, data)
@@ -302,7 +313,7 @@ def get_analysis(aid: int, db: Session = Depends(get_db)):
 def interpret(aid: int, body: InterpretIn, db: Session = Depends(get_db), doctor: str = Depends(require_doctor)):
     a = db.get(Analysis, aid) or _404()
     if not _consent_ok(a.document):
-        raise HTTPException(403, "Patient consent for AI processing is not recorded. Update the patient record first.")
+        raise HTTPException(403, "Patient consent for automated analysis is not recorded. Update the patient record first.")
     a.interpretation = _llm_errors(lambda: analysis_svc.interpret(db, a, body.question))
     db.commit()
     audit(db, doctor, "analysis_interpreted", f"analysis:{aid}", model=a.interpretation.get("model"))
@@ -321,7 +332,7 @@ def update_analysis(aid: int, body: AnalysisUpdate, db: Session = Depends(get_db
     if body.rows is not None:
         rows = []
         for r in body.rows:
-            rows.append({**r.model_dump(), "evaluation": evaluate(r.result, r.reference_interval),
+            rows.append({**r.model_dump(), "evaluation": evaluate(r.result, r.reference_interval, r.flag),
                          "verification": "doctor-edited", "bbox": None, "source_line": None,
                          "page": r.page or 1, "line_index": r.line_index or 0})
         s["rows"] = rows
@@ -389,8 +400,11 @@ async def transcribe(audio: UploadFile = File(...), language: str | None = Form(
         raise HTTPException(400, "Audio too short")
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "Audio too long")
-    res = _llm_errors(lambda: llm.transcribe(data, audio.filename or "speech.webm", language or None))
-    res["uncertain"] = bool((res["no_speech_prob"] or 0) > 0.6 or (res["avg_logprob"] is not None and res["avg_logprob"] < -1.0)
+    lang = language if language in ("en", "hi", "te") else None
+    res = _llm_errors(lambda: llm.transcribe(data, audio.filename or "speech.webm", lang))
+    # Whisper is less confident on Hindi/Telugu, so accept a lower average log-probability there
+    floor = -1.0 if lang in (None, "en") else -1.4
+    res["uncertain"] = bool((res["no_speech_prob"] or 0) > 0.6 or (res["avg_logprob"] is not None and res["avg_logprob"] < floor)
                             or len(res["text"]) < 2)
     return res
 
@@ -407,7 +421,7 @@ def speak(body: SpeakIn):
 
 @api.post("/voice/command")
 def command(body: CommandIn, doctor: str = Depends(require_doctor), db: Session = Depends(get_db)):
-    res = _llm_errors(lambda: assistant.interpret_command(body.text, body.history, body.context))
+    res = _llm_errors(lambda: assistant.interpret_command(body.text, body.history, body.context, body.language))
     if res["actions"]:
         audit(db, doctor, "voice_command", None, text=body.text[:200], actions=[a["name"] for a in res["actions"]])
     return res
@@ -445,7 +459,7 @@ def ask(body: AskIn, db: Session = Depends(get_db), doctor: str = Depends(requir
     if patient and not patient.consent_ai_processing:
         ev = [e for e in ev if e["source_type"] == "pubmed"]
         ctx = "\n\n".join(f"[{e['id']}] {e.get('title') or ''}\n{e['text']}" for e in ev) or "(no evidence found)"
-        warn.append("Patient documents excluded: no AI-processing consent on record.")
+        warn.append("Patient documents excluded: no consent for automated analysis on record.")
     msg, model = _llm_errors(lambda: llm.chat([
         {"role": "system", "content": ASK_PROMPT},
         {"role": "user", "content": llm.redact(f"Question: {body.question}\n\nEvidence:\n{ctx}", [patient.name if patient else None])[:24000]},
@@ -459,7 +473,7 @@ def ask(body: AskIn, db: Session = Depends(get_db), doctor: str = Depends(requir
 def analyze_symptoms(body: SymptomsIn, db: Session = Depends(get_db), doctor: str = Depends(require_doctor)):
     patient = db.get(Patient, body.patient_id) if body.patient_id else None
     if patient and not patient.consent_ai_processing:
-        raise HTTPException(403, "Patient consent for AI processing is not recorded. Update the patient record first.")
+        raise HTTPException(403, "Patient consent for automated analysis is not recorded. Update the patient record first.")
     labs = None
     if body.analysis_id:
         a = db.get(Analysis, body.analysis_id)
@@ -475,3 +489,29 @@ def disease_info(body: DiseaseIn, db: Session = Depends(get_db), doctor: str = D
     res = _llm_errors(lambda: symptoms_svc.disease_info(db, body.disease))
     audit(db, doctor, "disease_info", None, disease=body.disease[:200])
     return res
+
+
+# ---------------- photo-based triage ----------------
+@api.post("/vision/analyze")
+async def analyze_photo(image: UploadFile = File(...), body_part: str | None = Form(None),
+                        notes: str | None = Form(None), db: Session = Depends(get_db),
+                        doctor: str = Depends(require_doctor)):
+    data = await image.read(image_diagnosis.MAX_IMAGE_BYTES + 1)
+    if len(data) > image_diagnosis.MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Image is too large. Please use a photo under 3.5 MB.")
+    mime = image_diagnosis.detect_image_type(data)
+    if not mime:
+        raise HTTPException(415, "Please upload a JPG, PNG or WEBP photo.")
+    bp = (body_part or "").strip()[:60] or None
+    res = _llm_errors(lambda: image_diagnosis.analyze_image(data, mime, bp, (notes or "").strip()[:800] or None))
+    audit(db, doctor, "photo_analyzed", None, body_part=bp,
+          top=(res.get("possible_conditions") or [{}])[0].get("condition"))
+    return res
+
+
+# ---------------- translation (Hindi / Telugu) ----------------
+@api.post("/translate")
+def translate(body: TranslateIn):
+    if len(json.dumps(body.data, ensure_ascii=False)) > 60000:
+        raise HTTPException(413, "Too much text to translate at once.")
+    return {"language": body.language, "data": _llm_errors(lambda: translate_svc.translate_object(body.data, body.language))}

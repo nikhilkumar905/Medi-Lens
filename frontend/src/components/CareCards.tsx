@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { AlertTriangle, CheckCircle2, HeartPulse, Lightbulb, ShieldCheck, Siren, XCircle, type LucideIcon } from 'lucide-react'
 import type { Severity } from '../types'
+import { useLang } from '../i18n'
 
 type Tone = 'do' | 'avoid' | 'prevent' | 'info' | 'alert' | 'life'
 
@@ -39,14 +40,15 @@ export function TipCard({ title, items, tone, delay = 0 }: { title: string; item
 export function CareGrid({ precautions, avoid, prevention, lifestyle, seeDoctor, causes }: {
   precautions?: string[]; avoid?: string[]; prevention?: string[]; lifestyle?: string[]; seeDoctor?: string[]; causes?: string[]
 }) {
+  const { t } = useLang()
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      <TipCard title="Common causes" items={causes} tone="info" delay={0} />
-      <TipCard title="Precautions to take" items={precautions} tone="do" delay={0.05} />
-      <TipCard title="Things to avoid" items={avoid} tone="avoid" delay={0.1} />
-      <TipCard title="Prevention" items={prevention} tone="prevent" delay={0.15} />
-      <TipCard title="Healthy habits" items={lifestyle} tone="life" delay={0.2} />
-      <TipCard title="See a doctor quickly if" items={seeDoctor} tone="alert" delay={0.25} />
+      <TipCard title={t('Common causes')} items={causes} tone="info" delay={0} />
+      <TipCard title={t('Precautions to take')} items={precautions} tone="do" delay={0.05} />
+      <TipCard title={t('Things to avoid')} items={avoid} tone="avoid" delay={0.1} />
+      <TipCard title={t('Prevention')} items={prevention} tone="prevent" delay={0.15} />
+      <TipCard title={t('Healthy habits')} items={lifestyle} tone="life" delay={0.2} />
+      <TipCard title={t('See a doctor quickly if')} items={seeDoctor} tone="alert" delay={0.25} />
     </div>
   )
 }
@@ -60,14 +62,15 @@ const LEVELS: { key: Severity; label: string; color: string }[] = [
 
 /** Four-step animated meter showing how complex / urgent the picture looks. */
 export function SeverityMeter({ level, reason, title = 'How serious is it?' }: { level?: Severity; reason?: string; title?: string }) {
+  const { t } = useLang()
   if (!level) return null
   const idx = Math.max(0, LEVELS.findIndex(l => l.key === level))
   const cur = level === 'varies' ? { label: 'Varies', color: 'bg-slate-400' } : LEVELS[idx]
   return (
     <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</span>
-        <span className={`chip text-white ${cur.color}`}>{cur.label}</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{t(title)}</span>
+        <span className={`chip text-white ${cur.color}`}>{t(cur.label)}</span>
       </div>
       <div className="flex gap-1.5">
         {LEVELS.map((l, i) => (
@@ -84,10 +87,11 @@ export function SeverityMeter({ level, reason, title = 'How serious is it?' }: {
 
 /** Short bullet takeaways, each in its own animated pill. */
 export function KeyPoints({ items, title = 'Key points' }: { items?: string[]; title?: string }) {
+  const { t } = useLang()
   if (!items?.length) return null
   return (
     <section>
-      <h3 className="mb-2 text-sm font-bold text-slate-800">{title}</h3>
+      <h3 className="mb-2 text-sm font-bold text-slate-800">{t(title)}</h3>
       <div className="grid gap-2 sm:grid-cols-2">
         {items.map((x, i) => (
           <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
