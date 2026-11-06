@@ -1,0 +1,32 @@
+# ---- secrets & private data (never commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+storage/
+*.db
+*.sqlite3
+uploads/
+sample_reports/
+
+# ---- python ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- node ----
+node_modules/
+frontend/dist/
+*.local
+
+# ---- editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

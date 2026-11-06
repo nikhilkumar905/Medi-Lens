@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: medlens
+      POSTGRES_PASSWORD: medlens
+      POSTGRES_DB: medlens
+    volumes: [pgdata:/var/lib/postgresql/data]
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://medlens:medlens@db:5432/medlens
+      CORS_ORIGINS: http://localhost:8080
+    volumes: [storage:/data]
+    depends_on: [db]
+  frontend:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [backend]
+volumes:
+  pgdata:
+  storage:
