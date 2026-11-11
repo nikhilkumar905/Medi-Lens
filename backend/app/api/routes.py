@@ -393,6 +393,18 @@ def route_image(body: RouteIn, db: Session = Depends(get_db)):
 
 
 # ---------------- voice ----------------
+# Vocabulary hint for Whisper: the app's own command words, so short clips like "file" are recognised correctly.
+STT_PROMPT = {
+    "en": "MedLens voice commands: upload a file. File. Upload. Browse. Camera. Capture. Analyze my report. "
+          "One, two, three. Yes. No. Back. Read the results. CBC report in Downloads. Desktop. Documents. "
+          "I have fever and headache. Tell me about diabetes.",
+    "hi": "MedLens आवाज़ कमांड: फ़ाइल अपलोड करो। फ़ाइल। अपलोड। कैमरा। फ़ोटो लो। रिपोर्ट जाँचो। एक, दो, तीन। "
+          "हाँ। नहीं। वापस। नतीजे पढ़कर सुनाओ। डाउनलोड्स में CBC रिपोर्ट। मुझे बुखार है।",
+    "te": "MedLens వాయిస్ కమాండ్లు: ఫైల్ అప్‌లోడ్ చేయండి. ఫైల్. అప్‌లోడ్. కెమెరా. ఫోటో తీయి. రిపోర్ట్ చూడు. "
+          "ఒకటి, రెండు, మూడు. అవును. వద్దు. వెనక్కి. ఫలితాలు చదివి వినిపించు. డౌన్‌లోడ్స్‌లో CBC రిపోర్ట్. నాకు జ్వరం ఉంది.",
+}
+
+
 @api.post("/voice/transcribe")
 async def transcribe(audio: UploadFile = File(...), language: str | None = Form(None)):
     data = await audio.read()
@@ -401,10 +413,10 @@ async def transcribe(audio: UploadFile = File(...), language: str | None = Form(
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "Audio too long")
     lang = language if language in ("en", "hi", "te") else None
-    res = _llm_errors(lambda: llm.transcribe(data, audio.filename or "speech.webm", lang))
+    res = _llm_errors(lambda: llm.transcribe(data, audio.filename or "speech.webm", lang, STT_PROMPT.get(lang or "en")))
     # Whisper is less confident on Hindi/Telugu, so accept a lower average log-probability there
     floor = -1.0 if lang in (None, "en") else -1.4
-    res["uncertain"] = bool((res["no_speech_prob"] or 0) > 0.6 or (res["avg_logprob"] is not None and res["avg_logprob"] < floor)
+    res["uncertain"] = bool((res["no_speech_prob"] or 0) > 0.45 or (res["avg_logprob"] is not None and res["avg_logprob"] < floor)
                             or len(res["text"]) < 2)
     return res
 
@@ -492,6 +504,63 @@ def disease_info(body: DiseaseIn, db: Session = Depends(get_db), doctor: str = D
 
 
 # ---------------- photo-based triage ----------------
+MAX_PICKED_PHOTO = 25 * 1024 * 1024  # the browser shrinks the photo before analysis
+
+
+def _photo_response(db: Session, doctor: str, path, how: str) -> Response:
+    """Return a photo chosen on this computer so the browser can preview, shrink and analyse it (not stored)."""
+    if path.stat().st_size > MAX_PICKED_PHOTO:
+        raise HTTPException(413, "That photo is too large. Please choose one under 25 MB.")
+    data = path.read_bytes()
+    mime = image_diagnosis.detect_image_type(data)
+    if not mime:
+        raise HTTPException(415, "That file is not a JPG, PNG or WEBP photo.")
+    audit(db, doctor, how, None, filename=path.name)
+    return Response(data, media_type=mime, headers={"Cache-Control": "no-store"})
+
+
+class PhotoPickIn(BaseModel):
+    location: str | None = Field(default=None, max_length=300)
+
+
+@api.post("/vision/pick-local")
+def pick_local_photo(body: PhotoPickIn, request: Request, db: Session = Depends(get_db), doctor: str = Depends(require_doctor)):
+    """Voice "upload image": open a native photo dialog on this computer and return the chosen photo. Localhost only."""
+    if not get_settings().local_file_dialog:
+        raise HTTPException(501, "Local file dialog is disabled (LOCAL_FILE_DIALOG=false).")
+    _local_only(request)
+    initial = None
+    if body.location:
+        dirs, _ = file_finder.resolve_location(body.location)
+        dirs = [d for d in dirs if file_finder._is_allowed(d)]
+        initial = str(dirs[0]) if dirs else None
+    try:
+        path = local_picker.pick_file("photo", initialdir=initial)
+    except local_picker.PickerUnavailable as e:
+        raise HTTPException(501, str(e))
+    if path is None:
+        return {"cancelled": True}
+    return _photo_response(db, doctor, path, "local_photo_picked")
+
+
+@api.post("/vision/find")
+def find_photos(body: FindIn, request: Request, doctor: str = Depends(require_doctor)):
+    """Voice "the rash photo in Downloads": search the allowed folders for photos only."""
+    _local_only(request)
+    return file_finder.find_files(body.location, body.query, exts=local_picker.PHOTO_EXT)
+
+
+class PhotoOpenIn(BaseModel):
+    token: str = Field(max_length=100)
+
+
+@api.post("/vision/open-found")
+def open_found_photo(body: PhotoOpenIn, request: Request, db: Session = Depends(get_db), doctor: str = Depends(require_doctor)):
+    _local_only(request)
+    path = file_finder.path_for_token(body.token)
+    if path is None:
+        raise HTTPException(404, "That file selection has expired. Please search again.")
+    return _photo_response(db, doctor, path, "local_photo_opened")
 @api.post("/vision/analyze")
 async def analyze_photo(image: UploadFile = File(...), body_part: str | None = Form(None),
                         notes: str | None = Form(None), db: Session = Depends(get_db),

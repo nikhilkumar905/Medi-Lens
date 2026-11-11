@@ -42,6 +42,10 @@ TOOLS = [
                       "Pictures, OneDrive, a subfolder like 'Downloads/reports', or a path like 'D:\\medi'. Empty if not said."},
          "file_query": {"type": "string", "description": "Words identifying the file name, e.g. 'cbc report'. "
                         "Empty or 'latest' for the newest file."}}),
+    _fn("open_photo_upload", "Open a file browser so they can pick a PHOTO of a skin problem, rash, wound, burn or "
+        "injury from the computer (optionally starting in a folder); the photo is analysed automatically. Use when "
+        "they ask to upload / choose / browse an image or photo, or say 'file' or 'upload' on the photo step.",
+        {"location": {"type": "string", "description": "Folder as spoken, e.g. Downloads, Desktop, Pictures. Empty if not said."}}),
     _fn("activate_camera", "Open the camera so they can show the medical report to it and capture it for analysis."),
     _fn("capture_image", "Capture a photo from the open camera."),
     _fn("select_body_part", "Highlight a body part and open the body-part investigation workflow.",
@@ -80,6 +84,24 @@ an option ("the first one", "analyze my report", "upload", "use the camera", "as
 If they pick option 2 without naming a disease or symptoms, call navigate_to with step "disease" AND ask what's
 bothering them. If they pick option 1 without naming a file, call navigate_to with step "report". If they pick
 option 3 or want a photo of a skin problem, wound or injury checked, call navigate_to with step "image".
+
+What they say comes from speech recognition and is sometimes misheard, especially short commands:
+- In a short utterance, words that SOUND like "file" ("fine", "pile", "pail", "fail", "while", "phile", "the fine",
+  "a pile") almost certainly mean "file" -> call open_report_upload. "Upload a file" may come out garbled the same way.
+- If the utterance is a short fragment that does not clearly ask for anything ("to the side", "An.", "and",
+  a random name), do NOT call any function. Say briefly that you didn't catch it and ask them to repeat.
+- Never open the camera, capture, or take any other action unless they clearly asked for it.
+
+The photo step (state step "image") is for photos of a skin problem, wound or injury:
+- "upload image", "upload a photo", "choose a picture", "file", "upload" there, with no particular photo
+  described -> call open_photo_upload (with the folder as location if they said one).
+- They describe or name a PARTICULAR photo there ("the burn photo on my desktop", "rash picture in Downloads",
+  "my wound image") -> call open_file_from_computer with file_query = the describing words ("burn", "rash",
+  "wound") and location = the folder. The app searches photos, analyses the match, and opens the file browser
+  if nothing matches.
+- "take a photo", "use the camera" there -> call activate_camera.
+From any other step (home, menu, report...), when they ask to upload or choose a photo/picture/image of a rash,
+wound, burn or injury -> call open_photo_upload directly (do NOT just navigate_to "image").
 
 Understand the intent behind their words:
 - They name a disease and want to know about it, how to prevent it, precautions or what to avoid
@@ -188,6 +210,7 @@ def _ack(a: dict) -> str:
                         "home": "Back to the start."}.get(args.get("step", ""), "Okay."),
         "ask_about_disease": f"Let me pull up what you should know about {args.get('disease', 'that')}.",
         "open_report_upload": "Opening your file browser — pick the report and I'll take it from there.",
+        "open_photo_upload": "Opening your file browser — choose the photo and I'll analyse it.",
         "activate_camera": "Opening the camera. Please allow camera access if your browser asks.",
         "capture_image": "Capturing the image.",
         "select_body_part": f"Selecting the {args.get('body_part', '').replace('_', ' ')}. Which scan or report would you like to provide?",

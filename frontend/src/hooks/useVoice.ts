@@ -3,6 +3,51 @@ import { api } from '../services/api'
 
 export type MicState = 'off' | 'starting' | 'listening' | 'recording' | 'processing' | 'error'
 
+const PREROLL_S = 0.6
+
+/** Mono PCM chunks → 16-bit WAV, resampled to `outRate` (Whisper's native 16 kHz). */
+function encodeWav(chunks: Float32Array[], inRate: number, outRate: number): Blob {
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const pcm = new Float32Array(total)
+  let o = 0
+  for (const c of chunks) { pcm.set(c, o); o += c.length }
+  const ratio = inRate / outRate
+  const n = Math.floor(total / ratio)
+  const out = new DataView(new ArrayBuffer(44 + n * 2))
+  const str = (p: number, t: string) => { for (let i = 0; i < t.length; i++) out.setUint8(p + i, t.charCodeAt(i)) }
+  str(0, 'RIFF'); out.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ')
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true)
+  out.setUint32(24, outRate, true); out.setUint32(28, outRate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true)
+  str(36, 'data'); out.setUint32(40, n * 2, true)
+  for (let i = 0; i < n; i++) {
+    // average the input samples that fall into this output sample (simple low-pass + decimate)
+    const a = Math.floor(i * ratio), b = Math.min(total, Math.floor((i + 1) * ratio))
+    let acc = 0
+    for (let j = a; j < b; j++) acc += pcm[j]
+    const v = Math.max(-1, Math.min(1, acc / Math.max(1, b - a)))
+    out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true)
+  }
+  return new Blob([out.buffer], { type: 'audio/wav' })
+}
+
+/**
+ * True when a transcript is the assistant's own voice picked up by the microphone: at least 3 words, and most of
+ * them belong to runs of 3+ consecutive words copied from what the assistant said. A user's short answer
+ * ("one", "analyze my report") reuses single words of the question but not whole phrases, so it is kept.
+ */
+function isEcho(heard: string, spoken: string): boolean {
+  const words = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean)
+  const h = words(heard)
+  const s = words(spoken)
+  if (h.length < 3 || s.length < 3) return false
+  const tri = new Set(s.slice(0, -2).map((w, i) => `${w} ${s[i + 1]} ${s[i + 2]}`))
+  const inRun = new Array<boolean>(h.length).fill(false)
+  for (let i = 0; i + 2 < h.length; i++) {
+    if (tri.has(`${h[i]} ${h[i + 1]} ${h[i + 2]}`)) inRun[i] = inRun[i + 1] = inRun[i + 2] = true
+  }
+  return inRun.filter(Boolean).length / h.length >= 0.6
+}
+
 const PAUSE_KEY = 'medlens_voice_paused'
 let cachedVoice: SpeechSynthesisVoice | null | undefined
 
@@ -34,8 +79,8 @@ interface Options {
 
 /**
  * Hands-free voice loop:
- *  mic -> energy-based voice activity detection -> MediaRecorder segment
- *  -> Groq Whisper transcription (backend) -> onUtterance
+ *  mic -> energy-based voice activity detection (with a 0.6 s pre-roll so word starts are kept)
+ *  -> 16 kHz WAV -> Groq Whisper transcription (backend) -> echo filter -> onUtterance
  * Spoken replies use the browser's SpeechSynthesis. Talking while the assistant
  * speaks interrupts it (barge-in).
  */
@@ -48,7 +93,9 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
-  const recRef = useRef<MediaRecorder | null>(null)
+  const procRef = useRef<ScriptProcessorNode | null>(null)
+  const capturingRef = useRef(false)
+  const speakEndRef = useRef(0)
   const rafRef = useRef<number>(0)
   const busyRef = useRef(false)
   const speakingRef = useRef(false)
@@ -71,6 +118,7 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
   const stopSpeaking = useCallback(() => {
     speakTokenRef.current++
     window.speechSynthesis?.cancel()
+    if (speakingRef.current) speakEndRef.current = performance.now()
     speakingRef.current = false
     setSpeaking(false)
   }, [])
@@ -105,7 +153,7 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
       u.rate = 1.02
       u.pitch = 1
       if (i === chunks.length - 1) {
-        u.onend = u.onerror = () => { if (token === speakTokenRef.current) { speakingRef.current = false; setSpeaking(false) } }
+        u.onend = u.onerror = () => { if (token === speakTokenRef.current) { speakingRef.current = false; speakEndRef.current = performance.now(); setSpeaking(false) } }
       }
       window.speechSynthesis.speak(u)
     })
@@ -113,11 +161,31 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
 
   const repeat = useCallback(() => { if (lastSpokenRef.current) speak(lastSpokenRef.current) }, [speak])
 
+  // Watchdog: Chrome sometimes never fires the "end" event of an utterance. Without this the app would stay in
+  // "speaking" mode forever, and the microphone would only react to very loud, long speech.
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+    let idle = 0
+    const t = setInterval(() => {
+      const busy = window.speechSynthesis.speaking || window.speechSynthesis.pending
+      idle = speakingRef.current && !busy ? idle + 1 : 0
+      if (idle >= 2) {
+        idle = 0
+        speakingRef.current = false
+        speakEndRef.current = performance.now()
+        setSpeaking(false)
+      }
+    }, 300)
+    return () => clearInterval(t)
+  }, [])
+
   const stop = useCallback(() => {
     sessionRef.current++ // discard anything still being recorded or transcribed
     busyRef.current = false
+    capturingRef.current = false
     cancelAnimationFrame(rafRef.current)
-    if (recRef.current && recRef.current.state !== 'inactive') recRef.current.stop()
+    procRef.current?.disconnect()
+    procRef.current = null
     streamRef.current?.getTracks().forEach(t => t.stop())
     ctxRef.current?.close().catch(() => {})
     streamRef.current = null
@@ -138,7 +206,7 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
     setMic('starting')
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
     } catch (e) {
       const name = (e as DOMException).name
       setError(name === 'NotAllowedError'
@@ -156,11 +224,35 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
     })
     const ctx = new AudioContext()
     ctxRef.current = ctx
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => {})
     const src = ctx.createMediaStreamSource(stream)
     const analyser = ctx.createAnalyser()
     analyser.fftSize = 1024
     src.connect(analyser)
     analyserRef.current = analyser
+
+    // Raw PCM capture with a rolling pre-roll buffer. Voice detection needs a moment to trigger, and soft
+    // first sounds ("f" in "file") are quieter than the threshold, so we keep the last PREROLL_S seconds and
+    // prepend them: the start of every word is preserved.
+    const rate = ctx.sampleRate
+    const prerollMax = Math.round(rate * PREROLL_S)
+    let preroll: Float32Array[] = []
+    let prerollLen = 0
+    let captured: Float32Array[] = []
+    const proc = ctx.createScriptProcessor(2048, 1, 1)
+    proc.onaudioprocess = e => {
+      const data = new Float32Array(e.inputBuffer.getChannelData(0))
+      if (capturingRef.current) { captured.push(data); return }
+      preroll.push(data)
+      prerollLen += data.length
+      while (prerollLen - preroll[0].length > prerollMax) prerollLen -= preroll.shift()!.length
+    }
+    const mute = ctx.createGain()
+    mute.gain.value = 0 // the processor must be connected to run, but nothing should be audible
+    src.connect(proc)
+    proc.connect(mute)
+    mute.connect(ctx.destination)
+    procRef.current = proc
     setMic('listening')
 
     const buf = new Float32Array(analyser.fftSize)
@@ -169,36 +261,41 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
     let silenceMs = 0
     let recStart = 0
     let last = performance.now()
-    let chunks: Blob[] = []
+    let startedDuringSpeech = false
 
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : ''
-
-    const beginRecording = () => {
-      chunks = []
-      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
-      rec.ondataavailable = e => e.data.size && chunks.push(e.data)
-      rec.onstop = async () => {
-        if (session !== sessionRef.current || pausedRef.current) { busyRef.current = false; return }
-        const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' })
-        const dur = performance.now() - recStart
-        if (dur < 500 || blob.size < 2000) { busyRef.current = false; if (streamRef.current) setMic('listening'); return }
-        setMic('processing')
-        try {
-          const r = await api.transcribe(blob, sttRef.current)
-          if (r.text.trim() && session === sessionRef.current && !pausedRef.current) cbRef.current(r.text.trim(), r.uncertain)
-        } catch (e) {
-          setError((e as Error).message)
-        } finally {
-          if (session === sessionRef.current) {
-            busyRef.current = false
-            if (streamRef.current) setMic('listening')
-          }
-        }
-      }
-      rec.start(250)
-      recRef.current = rec
+    const beginCapture = (duringSpeech: boolean) => {
+      startedDuringSpeech = duringSpeech
+      captured = [...preroll]
+      preroll = []
+      prerollLen = 0
+      capturingRef.current = true
       recStart = performance.now()
       setMic('recording')
+    }
+
+    const endCapture = async () => {
+      capturingRef.current = false
+      const chunks = captured
+      captured = []
+      const voicedMs = performance.now() - recStart
+      if (session !== sessionRef.current || pausedRef.current) { busyRef.current = false; return }
+      if (voicedMs < 250) { busyRef.current = false; if (streamRef.current) setMic('listening'); return }
+      setMic('processing')
+      try {
+        const wav = encodeWav(chunks, rate, 16000)
+        const r = await api.transcribe(wav, sttRef.current)
+        const text = r.text.trim()
+        // a recording that began while the assistant was talking may be its own voice from the speakers
+        if (text && startedDuringSpeech && isEcho(text, lastSpokenRef.current)) return
+        if (text && session === sessionRef.current && !pausedRef.current) cbRef.current(text, r.uncertain)
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        if (session === sessionRef.current) {
+          busyRef.current = false
+          if (streamRef.current) setMic('listening')
+        }
+      }
     }
 
     const tick = () => {
@@ -209,24 +306,27 @@ export function useVoice({ onUtterance, language, sttLanguage }: Options) {
       let sum = 0
       for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
       const rms = Math.sqrt(sum / buf.length)
-      const threshold = speakingRef.current ? Math.max(0.06, floor * 6) : Math.max(0.018, floor * 3)
+      // While the assistant talks (or just finished), require somewhat louder speech to interrupt, so its own
+      // voice from the speakers rarely triggers a recording. Still short enough for a one-word answer like "one";
+      // echoes that do get recorded are filtered out by isEcho().
+      const echoRisk = speakingRef.current || now - speakEndRef.current < 400
+      const threshold = echoRisk ? Math.max(0.05, floor * 5) : Math.max(0.015, floor * 2.6)
       const voiced = rms > threshold
-      const rec = recRef.current
-      const recording = rec && rec.state === 'recording'
 
-      if (!recording && !busyRef.current) {
+      if (!capturingRef.current && !busyRef.current) {
         if (!voiced) floor = floor * 0.98 + rms * 0.02
-        voiceMs = voiced ? voiceMs + dt : Math.max(0, voiceMs - dt)
-        if (voiceMs > 160) {
+        voiceMs = voiced ? voiceMs + dt : Math.max(0, voiceMs - dt / 2)
+        if (voiceMs > (echoRisk ? 160 : 110)) {
           if (speakingRef.current) stopSpeaking() // barge-in
           busyRef.current = true
           voiceMs = 0
           silenceMs = 0
-          beginRecording()
+          beginCapture(echoRisk)
         }
-      } else if (recording) {
-        silenceMs = voiced ? 0 : silenceMs + dt
-        if (silenceMs > 1100 || now - recStart > 15000) rec!.stop()
+      } else if (capturingRef.current) {
+        const keepTalking = rms > Math.max(0.012, floor * 2)
+        silenceMs = keepTalking ? 0 : silenceMs + dt
+        if (silenceMs > 900 || now - recStart > 15000) void endCapture()
       }
       rafRef.current = requestAnimationFrame(tick)
     }

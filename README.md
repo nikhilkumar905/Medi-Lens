@@ -67,10 +67,10 @@ Talk to it in **English, हिन्दी or తెలుగు**. Tap a part 
 |---|---|
 | **Language picker** | English / हिन्दी / తెలుగు is asked on every launch. Switch any time from the top bar, even on the login page. |
 | **Whole interface translated** | Hand-checked translations for all main screens and spoken prompts. Any remaining English text (buttons, hints, placeholders, tooltips, error messages) is translated automatically once and cached in the browser. Medical values, units and test names stay exactly as printed. |
-| **Speech recognition** | Groq Whisper, told which language you speak, so Hindi and Telugu are recognised well. Hindi works in Devanagari or romanised ("mujhe report check karni hai"). |
+| **Speech recognition** | Groq Whisper, told which language you speak and primed with the app's own command words, so short commands ("file", "one") and Hindi and Telugu are recognised well. A 0.6 s audio pre-roll keeps the first sound of every word, and audio is sent as clean 16 kHz WAV. Hindi works in Devanagari or romanised ("mujhe report check karni hai"). |
 | **Spoken replies** | The assistant answers in your language and speaks with a matching browser voice (Hindi / Telugu / Indian-English when available). |
-| **Hands-free loop** | Voice-activity detection, barge-in (talk to interrupt), "stop", "repeat", and a real pause: when paused it neither listens nor speaks. |
-| **Quick commands** | Short phrases like "one / two / three", "एक / दो / तीन", "ఒకటి / రెండు / మూడు", "file", "back", "yes / हाँ / అవును" work instantly, without a server round-trip. |
+| **Hands-free loop** | Voice-activity detection, barge-in (a one-word answer interrupts the assistant), "stop", "repeat", and a real pause: when paused it neither listens nor speaks. An echo guard ignores the assistant's own voice picked up by the microphone, and a watchdog recovers if the browser never reports that speech ended. |
+| **Quick commands** | Short phrases like "one / two / three", "एक / दो / तीन", "ఒకటి / రెండు / మూడు", "file", "upload image", "back", "yes / हाँ / అవును" work instantly, without a server round-trip. Sound-alikes of "file" ("fine", "pail") are understood on upload screens. |
 | **Medical voice button** | 🩺 Stethoscope while listening (bounces with your voice), 💓 ECG trace while speaking, crossed stethoscope when muted, 🧠 brain while thinking. |
 
 ### 🧍 Interactive anatomy
@@ -104,6 +104,10 @@ Talk to it in **English, हिन्दी or తెలుగు**. Tap a part 
 
 ### 📷 Photo of a disease or injury
 - Upload or take a photo of a **rash, skin spot, wound, burn, bite, swelling or injured area**, with optional notes ("itchy for 2 weeks").
+- **Upload by voice:**
+  - Say **"upload image"** (or "upload a photo", "file", "फ़ोटो अपलोड करो", "ఫోటో అప్‌లోడ్ చేయండి") to open a photo-only file picker. The chosen photo is analysed automatically.
+  - Say **"the rash photo in Downloads"** to find a photo by name. If several match you get a numbered list, and if none match the file picker opens in that folder.
+  - From the main menu, **"upload a photo of my rash"** goes straight to the photo picker. "take a photo" opens the camera.
 - You get:
   - **what is visible**
   - **possible conditions** ranked by likelihood
@@ -202,6 +206,8 @@ Speak naturally: anything that isn't a quick command goes to the assistant, whic
 | Photo of disease / injury (option 3) | "three", "check a photo" | "तीन", "चोट की फ़ोटो" | "మూడు", "గాయం ఫోటో" |
 | Open the file picker | "file", "upload" | "फ़ाइल", "फ़ाइल अपलोड करो" | "ఫైల్", "ఫైల్ అప్‌లోడ్ చేయండి" |
 | Open a named file | "the CBC report in Downloads" | "डाउनलोड्स में CBC रिपोर्ट" | "డౌన్‌లోడ్స్‌లో CBC రిపోర్ట్" |
+| Upload a photo of a disease / injury | "upload image", "upload a photo" | "फ़ोटो अपलोड करो" | "ఫోటో అప్‌లోడ్ చేయండి" |
+| Open a named photo | "the rash photo in Downloads" | "डाउनलोड्स में रैश वाली फ़ोटो" | "డౌన్‌లోడ్స్‌లో దద్దుర్ల ఫోటో" |
 | Use the camera / take the photo | "use the camera" → "capture" | "कैमरा" → "फोटो लो" | "కెమెరా" → "తీయి" |
 | Learn about a disease | "tell me about dengue" | "डेंगू के बारे में बताओ" | "డెంగ్యూ గురించి చెప్పండి" |
 | Hear the results | "read the results" | "पढ़कर सुनाओ" | "చదివి వినిపించు" |
@@ -209,7 +215,7 @@ Speak naturally: anything that isn't a quick command goes to the assistant, whic
 | Navigate | "back", "main menu" | "वापस", "होम" | "వెనక్కి", "మొదటికి" |
 | Stop talking | "stop" | "रुको" | "ఆపు" |
 
-> Browsers only open their own file dialogs after a real click, so a spoken "file" opens a native **Open file** window on the computer instead. It closes itself if you name the file by voice.
+> Browsers only open their own file dialogs after a real click, so a spoken "file" or "upload image" opens a native **Open file** window on the computer instead. It closes itself if you name the file by voice.
 
 ---
 
@@ -304,6 +310,7 @@ Interactive docs: **http://localhost:8000/docs** (Swagger UI). Everything except
 | `POST` | `/api/analyses/{id}/reanalyze` · `/report` | Re-run analysis · generate PDF (approved only) |
 | `GET` | `/api/reports/{id}/download` | Download the PDF |
 | `POST` | `/api/vision/analyze` | Photo of a disease / injury → prediction |
+| `POST` | `/api/vision/pick-local` · `/api/vision/find` · `/api/vision/open-found` | Voice photo upload: native photo dialog · find photos by name · open a found photo (localhost only, photos are not stored) |
 | `POST` | `/api/symptoms/analyze` · `/api/knowledge/disease` | Symptom check · disease information |
 | `GET/POST` | `/api/knowledge/pubmed` · `/api/knowledge/ask` | PubMed search · evidence-based answer |
 | `POST` | `/api/voice/transcribe` · `/speak` · `/command` | Speech-to-text · speech · voice command |
@@ -372,6 +379,7 @@ Medi-Lens/
 | **Backend changes don't take effect** | Restart the backend. The `--reload` watcher has been seen to hang on Windows, so run without it and restart manually. |
 | **No Telugu voice** | Chrome usually has no Telugu voice; **Edge** includes one. Without a voice, replies are still shown as text. |
 | **Mic or camera not working** | They require `localhost` or HTTPS, and permission in the browser's site settings. |
+| **The assistant interrupts itself or hears its own voice** | Use headphones, or lower the speaker volume: the browser's echo cancellation does not cover the built-in speech voice. Most echoes are filtered out automatically. |
 | **Scanned report gives no values** | Install Tesseract and set `TESSERACT_CMD` if it isn't on `PATH`. |
 | **"Open file" window didn't appear** | It opens on the computer running the backend (check the taskbar). It only works on localhost (`LOCAL_FILE_DIALOG=true`). |
 

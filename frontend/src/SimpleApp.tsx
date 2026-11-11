@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  ArrowLeft, BookOpen, Camera, ChevronRight, FileText, FolderOpen, HeartPulse, Home, Loader2,
+  ArrowLeft, BookOpen, Camera, ChevronRight, FileText, FolderOpen, HeartPulse, Home, Image as ImageIcon, Loader2,
   LogOut, Mic, RotateCcw, Send, UploadCloud, X,
 } from 'lucide-react'
 import { api, auth, saveBlob, shrinkImage, uploadDocument, ApiError, type FoundFile } from './services/api'
@@ -25,7 +25,7 @@ type Result =
   | { kind: 'symptoms'; input: string; data: SymptomResult | null }
   | { kind: 'disease'; input: string; data: DiseaseInfo | null }
   | { kind: 'answer'; q: string; answer: string | null; evidence: Evidence[] }
-  | { kind: 'files'; folder: string; files: FoundFile[] }
+  | { kind: 'files'; folder: string; files: FoundFile[]; photo?: boolean }
   | { kind: 'image'; preview: string; data: ImageDiagnosis | null }
   | null
 
@@ -54,6 +54,14 @@ const W = {
   disease: ['disease', 'symptom', 'symptoms', 'ask', 'advice', 'recommendation', 'बीमारी', 'लक्षण', 'सलाह', 'रोग', 'వ్యాధి', 'లక్షణాలు', 'సలహా', 'రోగం'],
   camera: ['camera', 'scan', 'photo', 'show', 'कैमरा', 'फोटो', 'फ़ोटो', 'दिखाओ', 'కెమెరా', 'ఫోటో', 'చూపించు'],
   upload: ['upload', 'file', 'browse', 'अपलोड', 'फ़ाइल', 'फाइल', 'అప్‌లోడ్', 'ఫైల్'],
+  // a photo word together with a "pick it from the computer" verb means: open the photo picker
+  photoWord: ['photo', 'photos', 'image', 'images', 'picture', 'pictures', 'pic', 'pics', 'फ़ोटो', 'फोटो', 'तस्वीर', 'इमेज', 'चित्र',
+    'ఫోటో', 'ఫోటోను', 'చిత్రం', 'ఇమేజ్'],
+  pickVerb: ['upload', 'browse', 'choose', 'select', 'pick', 'open', 'attach', 'gallery', 'computer', 'अपलोड', 'चुनो', 'चुनें', 'खोलो',
+    'लगाओ', 'అప్‌లోడ్', 'అప్లోడ్', 'ఎంచుకో', 'ఎంచుకోండి', 'తెరువు', 'జోడించు'],
+  cameraOnly: ['camera', 'webcam', 'कैमरा', 'కెమెరా'],
+  // on the photo step these alone mean "pick a photo from the computer"
+  photoAlone: ['image', 'images', 'picture', 'pictures', 'gallery', 'इमेज', 'तस्वीर', 'చిత్రం', 'ఇమేజ్'],
   stop: ['stop', 'stop speaking', 'be quiet', 'silence', 'रुको', 'चुप', 'बस', 'ఆపు', 'ఆగు', 'చాలు'],
   // a short utterance containing any of these means "open the file picker"
   fileOnly: ['file', 'files', 'upload', 'upload file', 'upload a file', 'upload the file', 'browse', 'document', 'pdf', 'open file', 'choose file', 'select file', 'pick file',
@@ -65,6 +73,41 @@ const FILLER = new Set(['a', 'an', 'the', 'please', 'plz', 'my', 'me', 'can', 'c
   'करो', 'कर', 'करें', 'कीजिए', 'दो', 'मेरी', 'मेरा', 'एक', 'अभी', 'karo', 'kar', 'karna', 'hai', 'है', 'करना',
   'చేయి', 'చేయండి', 'చెయ్యి', 'నా', 'ఒక', 'ఇప్పుడు', 'చెయ్యండి'])
 const withoutFiller = (s: string) => norm(s).trim().split(' ').filter(w => !FILLER.has(w)).join(' ')
+
+// Speech recognition often mishears a lone "file" ("fine", "pail", "pile"...). These sound-alikes count as "file"
+// when the whole utterance is just one to three such words, on screens where uploading makes sense.
+const HESITATION = new Set(['el', 'al', 'uh', 'um', 'umm', 'oh', 'ah', 'er', 'hmm'])
+const FILE_ALIKE = new Set(['fine', 'pile', 'pail', 'pale', 'fail', 'phile', 'fyle', 'while', 'vile', 'mile', 'tile', 'feel', 'fill',
+  'foil', 'filed', 'files', 'fire', 'fly', 'fild', 'phyl', 'फायल', 'फाईल', 'फ़ाईल', 'पाइल', 'फाइलें', 'ఫైలు', 'పైల్', 'ఫైల'])
+function lev(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+const fileish = (w: string) => FILE_ALIKE.has(w) || (w.length >= 3 && w.length <= 5 && w !== 'five' && w !== 'fever' && lev(w, 'file') <= 1)
+const uploadish = (w: string) => w.length >= 5 && lev(w, 'upload') <= 2
+/** "fine", "the pile", "uh pail", "uplod a fine" … → true */
+function soundsLikeFileCommand(s: string): boolean {
+  const words = withoutFiller(s).split(' ').filter(w => w && !HESITATION.has(w))
+  return words.length >= 1 && words.length <= 3 && words.some(fileish) && words.every(w => fileish(w) || uploadish(w))
+}
+/** "upload image", "choose a photo", "फ़ोटो अपलोड करो", "ఫోటో అప్‌లోడ్ చేయండి" — but not "take a photo with the camera". */
+const wantsPhotoUpload = (s: string) => hasAny(s, W.photoWord) && hasAny(s, W.pickVerb) && !hasAny(s, W.cameraOnly) && !hasAny(s, W.capture)
+/** A folder named in a short command ("upload the photo from Downloads") so the picker opens there. */
+const FOLDER_WORDS: [string[], string][] = [
+  [['downloads', 'download', 'डाउनलोड', 'डाउनलोड्स', 'డౌన్‌లోడ్స్', 'డౌన్లోడ్స్', 'డౌన్‌లోడ్'], 'Downloads'],
+  [['desktop', 'डेस्कटॉप', 'డెస్క్‌టాప్'], 'Desktop'], [['documents', 'डॉक्यूमेंट्स', 'డాక్యుమెంట్స్'], 'Documents'],
+  [['pictures', 'पिक्चर्स', 'పిక్చర్స్'], 'Pictures'],
+]
+const folderIn = (s: string) => FOLDER_WORDS.find(([w]) => hasAny(s, w))?.[1]
+const PHOTO_NOISE = new Set(['from', 'in', 'on', 'of', 'at', 'for', 'folder', 'file', 'this', 'that', 'with', 'here', 'computer', 'pc', 'laptop',
+  'से', 'में', 'की', 'का', 'के', 'को', 'वाली', 'वाला', 'फ़ोल्डर', 'फोल्डर', 'నుండి', 'లో', 'యొక్క', 'ని', 'ను', 'ఫోల్డర్'])
+/** Words describing a particular photo ("upload the photo of my rash from Downloads" → "rash"); '' if none. */
+const photoDescription = (s: string) => withoutFiller(s).split(' ').filter(w => w && !PHOTO_NOISE.has(w) && !HESITATION.has(w) &&
+  !W.photoWord.includes(w) && !W.pickVerb.includes(w) && !FOLDER_WORDS.some(([fw]) => fw.includes(w))).join(' ')
+
 const ORDINALS: Record<string, number> = { first: 1, one: 1, '1': 1, second: 2, two: 2, '2': 2, third: 3, three: 3, '3': 3,
   fourth: 4, four: 4, '4': 4, fifth: 5, five: 5, '5': 5, sixth: 6, six: 6, '6': 6,
   'एक': 1, 'पहला': 1, 'दो': 2, 'दूसरा': 2, 'तीन': 3, 'तीसरा': 3, 'चार': 4, 'पाँच': 5, 'पांच': 5, 'छह': 6,
@@ -73,7 +116,7 @@ const ACCEPT = '.pdf,.jpg,.jpeg,.png,.docx,.txt'
 
 const PROMPT: Record<Step, string> = {
   home: '',
-  menu: 'How can I help you? Say "one" to analyze a medical report, "two" to ask about a disease or your symptoms, or "three" to check a photo of a disease or injury.',
+  menu: 'How can I help? Say "one" for a medical report, "two" for a disease or symptoms, or "three" for a photo of a disease or injury.',
   report: 'Would you like to upload a file, or show the report to the camera?',
   upload: 'Drop the file here or click to browse. You can also tell me where it is, like "the CBC report in Downloads".',
   disease: 'Tell me your symptoms, or name a disease you want to know about.',
@@ -90,7 +133,7 @@ const TRY: Record<Step, string[]> = {
   report: ['Upload a file', 'Use the camera'],
   upload: ['Open the CBC report from Downloads', 'Analyze the latest report on my desktop', 'Read the results'],
   disease: ['I have fever and headache for 3 days', 'Tell me about diabetes', 'How do I prevent dengue?'],
-  image: ['Take a photo', 'Read the results', 'Go back'],
+  image: ['Upload image', 'Take a photo', 'Read the results'],
 }
 
 function greeting() {
@@ -302,10 +345,13 @@ export default function SimpleApp() {
   // The native "Open file" dialog (opened by voice) stays on screen until the user picks. If the file arrives
   // another way (named by voice, dropped, camera), close the dialog automatically.
   const dialogOpen = useRef(false)
-  const dialogClosedByApp = useRef(false)
+  // Every dialog gets a number. When the app closes a dialog itself the number moves on, so the old request's
+  // late "cancelled" answer is ignored instead of being announced.
+  const dialogSeq = useRef(0)
   const closeFileDialog = () => {
     if (!dialogOpen.current) return
-    dialogClosedByApp.current = true
+    dialogSeq.current++
+    dialogOpen.current = false
     setBusyNote(null)
     void api.cancelPick().catch(() => { /* dialog already gone */ })
   }
@@ -317,22 +363,93 @@ export default function SimpleApp() {
     if (!health?.local_file_dialog) { say('Click the upload box to choose the file.'); return }
     setBusyNote('A file browser is open on your computer. Choose the report, or just tell me its name and I will open it for you.')
     say('I opened the file browser. Pick the report, or just tell me its name, like "the CBC report in Downloads".')
+    const my = ++dialogSeq.current
     dialogOpen.current = true
-    dialogClosedByApp.current = false
     try {
       const d = await api.pickLocal('report', null, location)
+      if (my !== dialogSeq.current) return // the file was opened another way; stay quiet
       dialogOpen.current = false
-      if (dialogClosedByApp.current) return // the file was opened another way; stay quiet
       setBusyNote(null)
       if (d.cancelled) { say('No file chosen. Tell me whenever you’re ready.'); return }
       await processDoc(d)
     } catch (e) {
+      if (my !== dialogSeq.current) return
       dialogOpen.current = false
-      if (dialogClosedByApp.current) return
       setBusyNote(null)
       say(e instanceof ApiError && (e.status === 403 || e.status === 501) ? 'I can’t open the file browser from here. Please use the upload box.' : `Upload failed: ${(e as Error).message}`)
     }
   }
+
+  /** Voice "upload image": open a photo dialog on this computer and analyse the chosen photo automatically. */
+  const openPhotoPicker = async (location?: string, intro?: string) => {
+    setStep('image')
+    if (!health?.local_file_dialog) { say('Click the photo box to choose the image.'); return }
+    if (dialogOpen.current) { say('The file browser is already open. Choose the photo, or tell me its name.'); return }
+    setBusyNote('A file browser is open on your computer. Choose the photo of the problem area, or just tell me its name (check the taskbar if you don’t see it).')
+    say(intro || 'I opened the file browser. Choose the photo, or tell me its name, like "the rash photo in Downloads".')
+    const my = ++dialogSeq.current
+    dialogOpen.current = true
+    try {
+      const r = await api.pickPhoto(location)
+      if (my !== dialogSeq.current) return // the photo arrived another way; stay quiet
+      dialogOpen.current = false
+      setBusyNote(null)
+      if (!(r instanceof Blob)) { say('No photo chosen. Tell me whenever you’re ready.'); return }
+      await runImage(r, '')
+    } catch (e) {
+      if (my !== dialogSeq.current) return
+      dialogOpen.current = false
+      setBusyNote(null)
+      say(e instanceof ApiError && (e.status === 403 || e.status === 501) ? 'I can’t open the file browser from here. Please click the photo box.' : `I couldn't open the photo: ${(e as Error).message}`)
+    }
+  }
+
+  const openFoundPhoto = async (f: FoundFile) => {
+    closeFileDialog()
+    setBusyNote(`Opening ${f.name}…`)
+    let blob: Blob
+    try { blob = await api.openFoundPhoto(f.token) } catch (e) { setBusyNote(null); say(`I couldn't open that photo: ${(e as Error).message}`); return }
+    setBusyNote(null)
+    await runImage(blob, '')
+  }
+
+  /** Voice "the rash photo in Downloads" on the photo step: find photos by name and analyse the match. */
+  const findAndOpenPhoto = async (location?: string, query?: string) => {
+    closeFileDialog()
+    setStep('image')
+    const q = (query || '').trim()
+    setBusyNote(`Looking for ${q && !/^(latest|newest|recent)$/i.test(q) ? `the photo “${q}”` : 'the latest photo'}${location ? ` in ${location}` : ''}…`)
+    try {
+      const r = await api.findPhotos(location || undefined, q)
+      setBusyNote(null)
+      if (r.error) { await openPhotoPicker(undefined, `${r.error} I opened the file browser instead, so you can choose the photo there.`); return }
+      if (!r.candidates.length) { await openPhotoPicker(location, `I couldn't find a photo matching “${q || 'that'}” in ${r.folder}, so I opened the file browser. Choose the photo there.`); return }
+      if (r.confident) { say(`Found ${r.candidates[0].name}.`, false); await openFoundPhoto(r.candidates[0]); return }
+      setResult({ kind: 'files', folder: r.folder, files: r.candidates, photo: true })
+      say(`I found ${r.candidates.length} photos in ${r.folder}. ${r.candidates.slice(0, 3).map((c, i) => `Number ${i + 1}: ${c.name.replace(/\.[^.]+$/, '')}`).join('. ')}. Which one should I open?`)
+    } catch (e) {
+      setBusyNote(null)
+      say(`I couldn't search for photos: ${(e as Error).message}`)
+    }
+  }
+
+  /** "Which file?" list for reports and photos; tap one or say "number 2". */
+  const filesPanel = (res: Extract<Result, { kind: 'files' }>) => (
+    <Panel k={res.photo ? 'photo-files' : 'files'}>
+      <div className="mb-3 text-sm font-semibold">{t(res.photo ? 'Which photo?' : 'Which file?')} <span className="font-normal text-slate-500">{t('Say “number 2” or tap one')} · {res.folder}</span></div>
+      <div className="space-y-2">
+        {res.files.map((f, i) => (
+          <motion.button key={f.token} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
+            onClick={() => void (res.photo ? openFoundPhoto(f) : openToken(f))} className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-400 hover:shadow">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-sm font-bold text-brand-700">{i + 1}</span>
+            {res.photo ? <ImageIcon size={18} className="shrink-0 text-slate-400" /> : <FileText size={18} className="shrink-0 text-slate-400" />}
+            <span className="min-w-0 flex-1"><span className="block truncate font-medium" data-no-translate>{f.name}</span>
+              <span className="block truncate text-xs text-slate-400" data-no-translate>{f.folder} · {new Date(f.modified * 1000).toLocaleDateString()}</span></span>
+          </motion.button>
+        ))}
+      </div>
+    </Panel>
+  )
 
   // ---------------- photo of disease / injury ----------------
   const runImage = async (file: Blob, notes: string) => {
@@ -437,8 +554,12 @@ export default function SimpleApp() {
         return
       }
       case 'ask_about_disease': void runDisease(args.disease); return
-      case 'open_file_from_computer': void findAndOpen(args.location, args.file_query); return
-      case 'open_report_upload': void openPicker(args.location); return
+      case 'open_file_from_computer':
+        if (R.current.step === 'image') void findAndOpenPhoto(args.location, args.file_query)
+        else void findAndOpen(args.location, args.file_query)
+        return
+      case 'open_report_upload': if (R.current.step === 'image') void openPhotoPicker(args.location); else void openPicker(args.location); return
+      case 'open_photo_upload': void openPhotoPicker(args.location); return
       case 'activate_camera': openCamera(false); return
       case 'capture_image': if (cameraRef.current) cameraRef.current.capture(); else say('The camera is not open. Say "use the camera" first.'); return
       case 'select_body_part': setArea(args.body_part); if (R.current.step === 'home') setStep('menu'); return
@@ -466,7 +587,7 @@ export default function SimpleApp() {
       case 'repeat_last_answer': voice.repeat(); return
       case 'cancel_current_operation': R.current.upload?.cancel(); closeFileDialog(); setBusyNote(null); setCamera(false); say('Cancelled.', false); return
       case 'go_back': back(); return
-      default: say('That one lives in the advanced workspace. Tap “Advanced” at the top right.')
+      default: say("Sorry, I can't do that here.")
     }
   }
 
@@ -492,13 +613,31 @@ export default function SimpleApp() {
   /** Quick local handling of short navigation phrases, so stepping through the flow by voice is instant. */
   const quickNav = (clean: string): boolean => {
     const s = clean
-    if (norm(s).trim().split(' ').length > 6) return false
+    const wordCount = norm(s).trim().split(' ').length
+    if (wordCount > 12) return false
     const st = R.current.step
+    // A photo word plus an upload word ("please upload the photo of my rash from Downloads") is unambiguous even in a
+    // longer sentence. If a particular photo is described ("rash"), look for it first; otherwise open the photo picker.
+    if (['image', 'menu', 'home'].includes(st) && !R.current.camera && wantsPhotoUpload(s)) {
+      if (dialogOpen.current) { say('The file browser is already open. Choose the photo, or tell me its name.'); return true }
+      const described = photoDescription(s)
+      if (described) void findAndOpenPhoto(folderIn(s), described)
+      else void openPhotoPicker(folderIn(s))
+      return true
+    }
+    if (wordCount > 6) return false
     if (R.current.camera && hasAny(s, W.capture)) { cameraRef.current?.capture(); return true }
     if (isOnly(s, W.back)) { back(); return true }
-    if (st !== 'image' && !R.current.camera && W.fileOnly.includes(withoutFiller(s))) {
+    if (st !== 'image' && !R.current.camera && (W.fileOnly.includes(withoutFiller(s)) ||
+      (['menu', 'report', 'upload'].includes(st) && soundsLikeFileCommand(s)))) {
       if (dialogOpen.current) { say('The file browser is already open. Pick the report, or tell me its name.'); return true }
       void openPicker(); return true
+    }
+    // photo step: "upload image", "file", "browse", "image", "फ़ोटो अपलोड करो"… → photo picker, analysed automatically
+    if (st === 'image' && !R.current.camera && (W.fileOnly.includes(withoutFiller(s)) || soundsLikeFileCommand(s) ||
+      W.photoAlone.includes(withoutFiller(s)))) {
+      if (dialogOpen.current) { say('The file browser is already open. Choose the photo, or tell me its name.'); return true }
+      void openPhotoPicker(folderIn(s)); return true
     }
     if (hasAny(s, W.home)) { goStep('home', false); say(t('Back to the start. Tap the body or say "I need help".')); return true }
     if (isOnly(s, W.read)) { readAloud(); return true }
@@ -530,7 +669,7 @@ export default function SimpleApp() {
       const n = words.map(w => ORDINALS[w]).find(Boolean) || (/\blast\b/.test(clean.toLowerCase()) ? r.files.length : 0)
       const byName = r.files.find(f => words.filter(w => w.length > 2).some(w => f.name.toLowerCase().includes(w)))
       const pick = n && n <= r.files.length ? r.files[n - 1] : !/\b(open|find|search|from|in)\b/i.test(clean) ? byName : undefined
-      if (pick) { setHeard(heardText); say(`Opening ${pick.name}.`, false); void openToken(pick); return }
+      if (pick) { setHeard(heardText); say(`Opening ${pick.name}.`, false); void (r.photo ? openFoundPhoto(pick) : openToken(pick)); return }
       if (startsWithAny(clean, W.no)) { setResult(null); say('Okay, never mind.'); return }
     }
     if (uncertain) { setHeard(heardText); say(`Sorry, I didn't quite catch that. Did you say “${heardText}”? Please say it again.`); return }
@@ -702,22 +841,7 @@ export default function SimpleApp() {
                     {result.stage === 'done' && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => setResult(null)}><RotateCcw size={14} />{t('Analyze another report')}</button></div>}
                   </Panel>
                 )}
-                {result?.kind === 'files' && (
-                  <Panel k="files">
-                    <div className="mb-3 text-sm font-semibold">Which file? <span className="font-normal text-slate-500">Say “number 2” or tap one · {result.folder}</span></div>
-                    <div className="space-y-2">
-                      {result.files.map((f, i) => (
-                        <motion.button key={f.token} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
-                          onClick={() => void openToken(f)} className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-400 hover:shadow">
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-sm font-bold text-brand-700">{i + 1}</span>
-                          <FileText size={18} className="shrink-0 text-slate-400" />
-                          <span className="min-w-0 flex-1"><span className="block truncate font-medium">{f.name}</span>
-                            <span className="block truncate text-xs text-slate-400">{f.folder} · {new Date(f.modified * 1000).toLocaleDateString()}</span></span>
-                        </motion.button>
-                      ))}
-                    </div>
-                  </Panel>
-                )}
+                {result?.kind === 'files' && !result.photo && filesPanel(result)}
               </motion.div>
             )}
 
@@ -728,6 +852,7 @@ export default function SimpleApp() {
                     <motion.h2 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-bold text-slate-900">{t('Show me the problem')}</motion.h2>
                     <ImageIntake area={area} busy={false} captured={captured} onClearCaptured={() => setCaptured(null)}
                       onCamera={() => openCamera(true, 'image')} onAnalyze={(b, _n, notes) => void runImage(b, notes)} />
+                    {result?.kind === 'files' && result.photo && filesPanel(result)}
                   </>
                 ) : (
                   <>

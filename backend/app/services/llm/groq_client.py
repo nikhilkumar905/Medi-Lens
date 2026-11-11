@@ -98,13 +98,16 @@ def parse_json(content: str) -> dict:
     raise LLMError("Model did not return valid JSON")
 
 
-def transcribe(audio: bytes, filename: str, language: str | None = None) -> dict:
+def transcribe(audio: bytes, filename: str, language: str | None = None, prompt: str | None = None) -> dict:
+    """Speech-to-text. `prompt` primes Whisper with the app's vocabulary so short commands
+    ("file", "upload a file") are not misheard as "fine" or "pail"."""
     s = get_settings()
+    kwargs = dict(file=(filename, audio), model=s.groq_stt_model, response_format="verbose_json",
+                  language=language, temperature=0.0)
+    if prompt:
+        kwargs["prompt"] = prompt
     try:
-        resp = _client().audio.transcriptions.create(
-            file=(filename, audio), model=s.groq_stt_model,
-            response_format="verbose_json", language=language, temperature=0.0,
-        )
+        resp = _client().audio.transcriptions.create(**kwargs)
     except LLMNotConfigured:
         raise
     except Exception as e:

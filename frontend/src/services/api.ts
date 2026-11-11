@@ -57,6 +57,11 @@ export const api = {
 
   pickLocal: (category: UploadKind, patient_id: number | null, location?: string) =>
     req<Doc & { cancelled?: boolean }>('/documents/pick-local', { method: 'POST', body: json({ category, patient_id, location }) }),
+  /** Voice "upload image": native photo dialog on this computer → the chosen photo (or { cancelled }). */
+  pickPhoto: (location?: string) => req<Blob | { cancelled?: boolean }>('/vision/pick-local', { method: 'POST', body: json({ location }) }),
+  /** Voice "the rash photo in Downloads": search the computer for photos only. */
+  findPhotos: (location?: string, query?: string) => req<FindResult>('/vision/find', { method: 'POST', body: json({ location, query }) }),
+  openFoundPhoto: (token: string) => req<Blob>('/vision/open-found', { method: 'POST', body: json({ token }) }),
   /** Close the native file dialog opened by pickLocal (the file was chosen another way). */
   cancelPick: () => req<{ closed: boolean }>('/documents/pick-local/cancel', { method: 'POST' }),
   findFiles: (location?: string, query?: string) =>
@@ -77,7 +82,7 @@ export const api = {
 
   transcribe: (audio: Blob, language?: string) => {
     const fd = new FormData()
-    fd.append('audio', audio, 'speech.webm')
+    fd.append('audio', audio, audio.type.includes('wav') ? 'speech.wav' : 'speech.webm')
     if (language) fd.append('language', language)
     return req<{ text: string; uncertain: boolean; language: string | null }>('/voice/transcribe', { method: 'POST', body: fd })
   },

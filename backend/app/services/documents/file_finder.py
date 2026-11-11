@@ -118,13 +118,21 @@ STOP_WORDS = {"the", "a", "an", "my", "file", "report", "pdf", "document", "of",
               "open", "from", "in", "latest", "recent", "newest", "last"}
 
 
-def find_files(location: str | None, query: str | None, limit: int = 6) -> dict:
+# extra words ignored when searching for photos ("the rash photo" -> "rash")
+PHOTO_STOP_WORDS = {"photo", "photos", "image", "images", "picture", "pictures", "pic", "pics", "jpg", "jpeg", "png"}
+
+
+def find_files(location: str | None, query: str | None, limit: int = 6, exts: set[str] | None = None) -> dict:
+    """Search the allowed folders for files matching a spoken name. `exts` limits the search to those file
+    types (e.g. photos only); by default every supported report type is searched."""
     folders, label = resolve_location(location)
     folders = [f for f in folders if _is_allowed(f)]
     if not folders:
         return {"folder": label, "candidates": [], "error": f"I can't find or access the folder '{label}'."}
     q = query or ""
-    qt = [t for t in _norm(q) if t not in STOP_WORDS]
+    stop = STOP_WORDS | PHOTO_STOP_WORDS if exts else STOP_WORDS
+    qt = [t for t in _norm(q) if t not in stop]
+    allowed = exts or ALLOWED_EXT
     want_latest = bool(re.search(r"\b(latest|newest|recent|last)\b", q, re.I))
     files: list[tuple[Path, os.stat_result]] = []
     for base in folders:
@@ -136,7 +144,7 @@ def find_files(location: str | None, query: str | None, limit: int = 6) -> dict:
             for n in names:
                 if n.startswith(("~$", ".")):  # Office lock files / hidden files
                     continue
-                if Path(n).suffix.lower() in ALLOWED_EXT:
+                if Path(n).suffix.lower() in allowed:
                     p = Path(root) / n
                     try:
                         files.append((p, p.stat()))
@@ -157,7 +165,10 @@ def find_files(location: str | None, query: str | None, limit: int = 6) -> dict:
         # medical-looking names first, then newest
         scored = sorted(((1.0, st.st_mtime, p, st) for p, st in files),
                         key=lambda x: (0 if med.search(x[2].stem) else 1, -x[1]))
-        scored = [s for s in scored if s[2].suffix.lower() in (".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png")]
+        if exts:  # photos: newest first
+            scored.sort(key=lambda x: -x[1])
+        else:
+            scored = [s for s in scored if s[2].suffix.lower() in (".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png")]
     now = time.time()
     for k in [k for k, (_, t) in _tokens.items() if now - t > TOKEN_TTL]:
         _tokens.pop(k, None)

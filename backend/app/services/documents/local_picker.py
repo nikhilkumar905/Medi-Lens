@@ -32,8 +32,11 @@ FILETYPES = {
     "ct": [("CT DICOM", "*.dcm *.dicom")],
     "mri": [("MRI DICOM", "*.dcm *.dicom")],
     "ultrasound": [("Ultrasound", "*.dcm *.dicom *.jpg *.jpeg *.png")],
-    "photo": [("Photos", "*.jpg *.jpeg *.png")],
+    "photo": [("Photos", "*.jpg *.jpeg *.png *.webp")],
 }
+
+
+PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 class PickerUnavailable(RuntimeError):
@@ -50,7 +53,8 @@ def pick_file(category: str, timeout_s: int = 300, initialdir: str | None = None
     global _current
     cancel_pick()  # never stack two dialogs
     patterns = FILETYPES.get(category, FILETYPES["report"])
-    title = "MedLens — choose a " + ("medical report" if category in ("report", "previous") else category.upper() + " file")
+    title = "MedLens — choose a " + ("medical report" if category in ("report", "previous")
+                                    else "photo of the problem area" if category == "photo" else category.upper() + " file")
     try:
         proc = subprocess.Popen([sys.executable, "-c", _SCRIPT, title, json.dumps(patterns), initialdir or ""],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -78,7 +82,8 @@ def pick_file(category: str, timeout_s: int = 300, initialdir: str | None = None
     if not path:
         return None
     p = Path(path)
-    if p.suffix.lower() not in ALLOWED_EXT or not p.is_file():
+    allowed = PHOTO_EXT if category == "photo" else ALLOWED_EXT
+    if p.suffix.lower() not in allowed or not p.is_file():
         raise PickerUnavailable("Selected file type is not supported")
     return p
 

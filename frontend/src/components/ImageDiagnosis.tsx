@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { AlertTriangle, Bandage, Camera, Eye, ImagePlus, Loader2, ScanSearch, Sparkles, Volume2, X } from 'lucide-react'
+import { AlertTriangle, Bandage, Camera, Eye, ImagePlus, Loader2, Mic, ScanSearch, Sparkles, Volume2, X } from 'lucide-react'
 import type { ImageDiagnosis } from '../types'
 import { BODY_PART_LABELS } from './AnatomyViewer'
 import { ConditionCards } from './SymptomPanel'
@@ -56,6 +56,7 @@ export function ImageIntake({ area, busy, onAnalyze, onCamera, captured, onClear
           <button onClick={onCamera} className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 py-5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-amber-300 hover:bg-amber-50">
             <Camera className="text-amber-600" size={26} />{t('Take a photo')}
           </button>
+          <p className="flex items-center gap-1.5 text-xs text-slate-500 sm:col-span-2"><Mic size={13} className="shrink-0 text-brand-600" />{t('Or just say “upload image” and choose the photo. I’ll analyse it automatically.')}</p>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
